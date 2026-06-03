@@ -46,7 +46,7 @@ import { DesignFilesPanel } from './DesignFilesPanel';
 import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
 import { designSystemGithubEvidenceState, repoConnectCopy } from './design-system-github-evidence';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { MissingBrandFontsBanner } from './MissingBrandFontsBanner';
 import { PasteTextDialog } from './PasteTextDialog';
@@ -76,6 +76,7 @@ interface Props {
   commentQueueOnSend?: boolean;
   commentSendDisabled?: boolean;
   openRequest?: { name: string; nonce: number } | null;
+  surfacePreviewOpenRequest?: WorkspaceSurfacePreviewOpenRequest | null;
   liveArtifactEvents?: LiveArtifactEventItem[];
   designSystemActivityEvents?: AgentEvent[];
   // Persisted set of open tabs + active tab. Owned by ProjectView so the
@@ -127,6 +128,17 @@ interface Props {
   onLaunchTerminalAuth?: () => void;
   // Conversation id for the AMR promotion-card telemetry payload.
   conversationId?: string | null;
+}
+
+export interface WorkspaceSurfacePreviewEntry {
+  tabId: string;
+  title: string;
+  url: string;
+  sourceFile?: string | null;
+}
+
+export interface WorkspaceSurfacePreviewOpenRequest extends WorkspaceSurfacePreviewEntry {
+  nonce: number;
 }
 
 interface SketchState {
@@ -222,6 +234,7 @@ export function FileWorkspace({
   commentQueueOnSend = false,
   commentSendDisabled = false,
   openRequest,
+  surfacePreviewOpenRequest,
   liveArtifactEvents = [],
   designSystemActivityEvents = [],
   tabsState,
@@ -280,6 +293,7 @@ export function FileWorkspace({
   const [showPasteDialog, setShowPasteDialog] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sketches, setSketches] = useState<Record<string, SketchState>>({});
+  const [surfacePreviewTabs, setSurfacePreviewTabs] = useState<Record<string, WorkspaceSurfacePreviewEntry>>({});
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [draggedTabName, setDraggedTabName] = useState<string | null>(null);
   const [dragOverTab, setDragOverTab] = useState<{
@@ -322,6 +336,10 @@ export function FileWorkspace({
     setActiveTab(tabsState.active ?? defaultRootTab);
   }, [tabsState.active, defaultRootTab]);
 
+  useEffect(() => {
+    setSurfacePreviewTabs({});
+  }, [projectId]);
+
   function setPersistedActive(name: string | null) {
     setActiveTab(name ?? defaultRootTab);
     onTabsStateChange({ tabs: persistedTabs, active: name });
@@ -339,6 +357,7 @@ export function FileWorkspace({
   useEffect(() => {
     if (activeTab === DESIGN_FILES_TAB || activeTab === DESIGN_SYSTEM_TAB) return;
     if (sketches[activeTab] && !sketches[activeTab]!.persisted) return;
+    if (surfacePreviewTabs[activeTab]) return;
     if (!persistedTabs.includes(activeTab)) {
       setPersistedActive(persistedTabs[persistedTabs.length - 1] ?? null);
     }
@@ -359,6 +378,16 @@ export function FileWorkspace({
     setActiveTab(name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRequest]);
+
+  useEffect(() => {
+    if (!surfacePreviewOpenRequest) return;
+    const { nonce: _nonce, ...entry } = surfacePreviewOpenRequest;
+    setSurfacePreviewTabs((current) => ({
+      ...current,
+      [entry.tabId]: entry,
+    }));
+    setActiveTab(entry.tabId);
+  }, [surfacePreviewOpenRequest]);
 
   function openFile(name: string) {
     setUploadError(null);
@@ -383,6 +412,26 @@ export function FileWorkspace({
       : [...withoutClosed, openName];
     onTabsStateChange({ tabs: nextTabs, active: openName });
     setActiveTab(openName);
+  }
+
+  function openSurfacePreviewTab(entry: WorkspaceSurfacePreviewEntry) {
+    setUploadError(null);
+    setSurfacePreviewTabs((current) => ({
+      ...current,
+      [entry.tabId]: entry,
+    }));
+    setActiveTab(entry.tabId);
+  }
+
+  function closeSurfacePreviewTab(tabId: string) {
+    setSurfacePreviewTabs((current) => {
+      const next = { ...current };
+      delete next[tabId];
+      return next;
+    });
+    if (activeTab === tabId) {
+      setActiveTab(DESIGN_FILES_TAB);
+    }
   }
 
   function closeTab(name: string) {
@@ -832,10 +881,22 @@ export function FileWorkspace({
     return liveArtifactEntries.find((entry) => entry.tabId === activeTab) ?? null;
   }, [activeTab, liveArtifactEntries]);
 
-  // Tabs rendered are persisted tabs plus any pending (un-saved) sketches.
+  const activeSurfacePreview = useMemo<WorkspaceSurfacePreviewEntry | null>(() => {
+    if (activeTab === DESIGN_FILES_TAB || activeTab === DESIGN_SYSTEM_TAB) return null;
+    return surfacePreviewTabs[activeTab] ?? null;
+  }, [activeTab, surfacePreviewTabs]);
+
+  // Tabs rendered are persisted tabs plus transient previews and any pending
+  // (un-saved) sketches.
   const tabNames = useMemo(() => {
     const seen = new Set(persistedTabs);
     const extras: string[] = [];
+    for (const name of Object.keys(surfacePreviewTabs)) {
+      if (!seen.has(name)) {
+        extras.push(name);
+        seen.add(name);
+      }
+    }
     for (const name of Object.keys(sketches)) {
       if (!sketches[name]?.persisted && !seen.has(name)) {
         extras.push(name);
@@ -843,7 +904,7 @@ export function FileWorkspace({
       }
     }
     return [...persistedTabs, ...extras];
-  }, [persistedTabs, sketches]);
+  }, [persistedTabs, surfacePreviewTabs, sketches]);
 
   const isActiveSketch = activeFile?.kind === 'sketch' && isSketchName(activeFile.name);
   const activeSketch = activeFile && isActiveSketch ? sketches[activeFile.name] : null;
@@ -917,25 +978,40 @@ export function FileWorkspace({
             <span className="ws-tab-label">{t('workspace.designFiles')}</span>
           </button>
           {tabNames.map((name) => {
+            const surfacePreview = surfacePreviewTabs[name];
             const sketchEntry = sketches[name];
             const dirtyMark =
               sketchEntry && (sketchEntry.dirty || !sketchEntry.persisted) ? ' •' : '';
             const isPending = sketchEntry && !sketchEntry.persisted;
             const onDisk = visibleFiles.find((f) => f.name === name);
             const liveArtifact = liveArtifactEntries.find((entry) => entry.tabId === name);
-            const kind = liveArtifact ? 'live-artifact' : onDisk?.kind ?? (isSketchName(name) ? 'sketch' : 'text');
+            const kind = surfacePreview
+              ? 'surface-preview'
+              : liveArtifact
+                ? 'live-artifact'
+                : onDisk?.kind ?? (isSketchName(name) ? 'sketch' : 'text');
             return (
               <Tab
                 key={name}
-                label={`${liveArtifact?.title ?? name}${dirtyMark}`}
+                label={`${surfacePreview?.title ?? liveArtifact?.title ?? name}${dirtyMark}`}
                 active={activeTab === name}
-                onActivate={() =>
-                  isPending ? activatePending(name) : setPersistedActive(name)
-                }
-                onClose={() => closeTab(name)}
+                onActivate={() => {
+                  if (surfacePreview) {
+                    setActiveTab(name);
+                    return;
+                  }
+                  isPending ? activatePending(name) : setPersistedActive(name);
+                }}
+                onClose={() => {
+                  if (surfacePreview) {
+                    closeSurfacePreviewTab(name);
+                    return;
+                  }
+                  closeTab(name);
+                }}
                 kind={kind}
                 liveArtifact={liveArtifact}
-                draggable={persistedTabs.includes(name)}
+                draggable={!surfacePreview && persistedTabs.includes(name)}
                 dragging={draggedTabName === name}
                 dragOverEdge={
                   dragOverTab?.name === name && draggedTabName !== name
@@ -1057,6 +1133,7 @@ export function FileWorkspace({
             onRefreshFiles={onRefreshFiles}
             onOpenFile={openFile}
             onOpenLiveArtifact={(tabId) => openFile(tabId)}
+            onOpenRenderedPreview={openSurfacePreviewTab}
             onRenameFile={handleRename}
             onDeleteFile={(name) => {
               trackFileManagerClick(analytics.track, {
@@ -1132,6 +1209,8 @@ export function FileWorkspace({
             liveArtifactEvents={liveArtifactEvents}
             onRefreshArtifacts={onRefreshFiles}
           />
+        ) : activeSurfacePreview ? (
+          <SurfacePreviewWorkspace entry={activeSurfacePreview} />
         ) : activeFile ? (
           <FileViewer
             projectId={projectId}
@@ -1201,6 +1280,22 @@ export function FileWorkspace({
           onClose={() => setQuickSwitcherOpen(false)}
         />
       ) : null}
+    </div>
+  );
+}
+
+function SurfacePreviewWorkspace({ entry }: { entry: WorkspaceSurfacePreviewEntry }) {
+  return (
+    <div
+      className="surface-preview-workspace"
+      data-testid="surface-preview-workspace"
+      data-source-file={entry.sourceFile ?? undefined}
+    >
+      <iframe
+        title={entry.title}
+        src={entry.url}
+        sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+      />
     </div>
   );
 }
@@ -2566,7 +2661,7 @@ function Tab({
   onActivate: () => void;
   onClose?: () => void;
   closable?: boolean;
-  kind?: ProjectFile['kind'] | 'live-artifact';
+  kind?: ProjectFile['kind'] | 'live-artifact' | 'surface-preview';
   liveArtifact?: LiveArtifactWorkspaceEntry;
   draggable?: boolean;
   dragging?: boolean;
@@ -2584,6 +2679,7 @@ function Tab({
       className={[
         'ws-tab',
         kind === 'live-artifact' ? 'live-artifact-tab' : '',
+        kind === 'surface-preview' ? 'surface-preview-tab' : '',
         active ? 'active' : '',
         draggable ? 'draggable' : '',
         dragging ? 'dragging' : '',
@@ -2671,15 +2767,9 @@ function wheelDeltaToPixels(delta: number, deltaMode: number): number {
   return delta;
 }
 
-function kindIconName(
-  kind?: string,
-):
-  | 'file-code'
-  | 'image'
-  | 'pencil'
-  | 'file'
-  | null {
+function kindIconName(kind?: string): IconName | null {
   if (kind === 'live-artifact') return 'file-code';
+  if (kind === 'surface-preview') return 'eye';
   if (kind === 'html') return 'file-code';
   if (kind === 'image') return 'image';
   if (kind === 'sketch') return 'pencil';

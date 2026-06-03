@@ -142,7 +142,7 @@ import { AppChromeHeader } from './AppChromeHeader';
 import { AvatarMenu } from './AvatarMenu';
 import { HandoffButton } from './HandoffButton';
 import { ProjectDesignSystemPicker } from './ProjectDesignSystemPicker';
-import { ChatPane } from './ChatPane';
+import { ChatPane, type ImportedSurfaceWorkspacePreview } from './ChatPane';
 import type { ChatSendMeta } from './ChatComposer';
 import {
   CritiqueTheaterMount,
@@ -152,7 +152,7 @@ import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
-import { FileWorkspace } from './FileWorkspace';
+import { FileWorkspace, type WorkspaceSurfacePreviewOpenRequest } from './FileWorkspace';
 import { Icon } from './Icon';
 import {
   type PluginFolderAgentAction,
@@ -667,6 +667,8 @@ export function ProjectView({
   // include a nonce so re-clicking the same name after the user closed the
   // tab still focuses it.
   const [openRequest, setOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const [surfacePreviewOpenRequest, setSurfacePreviewOpenRequest] =
+    useState<WorkspaceSurfacePreviewOpenRequest | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
   const streamingConversationIdRef = useRef<string | null>(null);
@@ -1131,6 +1133,17 @@ export function ProjectView({
   const requestOpenFile = useCallback((name: string) => {
     if (!name) return;
     setOpenRequest({ name, nonce: Date.now() });
+  }, []);
+
+  const requestOpenSurfacePreview = useCallback((preview: ImportedSurfaceWorkspacePreview) => {
+    if (!preview.url) return;
+    setSurfacePreviewOpenRequest({
+      tabId: `surface-preview:${preview.id}`,
+      title: preview.title,
+      url: preview.url,
+      sourceFile: preview.sourceFile ?? null,
+      nonce: Date.now(),
+    });
   }, []);
 
   const persistArtifact = useCallback(
@@ -4499,6 +4512,7 @@ export function ProjectView({
               onUpdateQueuedSend={updateQueuedChatSend}
               onSendQueuedNow={sendQueuedChatSendNow}
               onRequestOpenFile={requestOpenFile}
+              onOpenSurfacePreview={requestOpenSurfacePreview}
               onRequestPluginFolderAgentAction={handlePluginFolderAgentAction}
               activePluginActionPaths={activePluginActionPaths}
               hiddenPluginActionPaths={hiddenAssistantPluginActionPaths}
@@ -4594,6 +4608,7 @@ export function ProjectView({
           commentQueueOnSend={commentQueueOnSend}
           commentSendDisabled={currentConversationQueueDisabled}
           openRequest={openRequest}
+          surfacePreviewOpenRequest={surfacePreviewOpenRequest}
           liveArtifactEvents={liveArtifactEvents}
           designSystemActivityEvents={designSystemActivityEvents}
           tabsState={openTabsState}

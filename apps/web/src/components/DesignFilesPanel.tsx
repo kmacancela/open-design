@@ -3,9 +3,20 @@ import { useAnalytics } from '../analytics/provider';
 import { trackFileManagerClick } from '../analytics/events';
 import { useT } from '../i18n';
 import type { Dict } from '../i18n/types';
-import { projectFileUrl, projectRawUrl } from '../providers/registry';
+import {
+  fetchProjectUiSurfaces,
+  projectFileUrl,
+  projectRawUrl,
+  startProjectUiPreview,
+} from '../providers/registry';
 import { buildSrcdoc } from '../runtime/srcdoc';
-import type { LiveArtifactWorkspaceEntry, ProjectFile, ProjectFileKind } from '../types';
+import type {
+  LiveArtifactWorkspaceEntry,
+  ProjectFile,
+  ProjectFileKind,
+  ProjectUiPreviewRuntimeResponse,
+  ProjectUiSurface,
+} from '../types';
 import {
   createFileSystemReadError,
   FILE_SYSTEM_READ_ERROR_MESSAGE,
@@ -27,6 +38,7 @@ interface Props {
   onRefreshFiles: () => Promise<void> | void;
   onOpenFile: (name: string) => void;
   onOpenLiveArtifact: (tabId: LiveArtifactWorkspaceEntry['tabId']) => void;
+  onOpenRenderedPreview?: (preview: RenderedWorkspacePreview) => void;
   onRenameFile: (from: string, to: string) => Promise<ProjectFile | null> | ProjectFile | null;
   onDeleteFile: (name: string) => void;
   onDeleteFiles: (names: string[]) => Promise<void> | void;
@@ -46,10 +58,22 @@ interface Props {
   hiddenPluginActionPaths?: Set<string>;
 }
 
+interface RenderedWorkspacePreview {
+  tabId: string;
+  title: string;
+  url: string;
+  sourceFile?: string | null;
+}
+
 interface ActionNotice {
   message: string;
   url?: string;
 }
+
+type RenderedPreviewState =
+  | { status: 'loading' }
+  | { status: 'ready'; url: string }
+  | { status: 'unavailable' };
 
 type DesignFilesGroupMode = 'kind' | 'modified';
 type ModifiedSection = 'today' | 'yesterday' | 'previous7Days' | 'previous30Days' | 'older';
@@ -189,6 +213,7 @@ export function DesignFilesPanel({
   onRefreshFiles,
   onOpenFile,
   onOpenLiveArtifact,
+  onOpenRenderedPreview,
   onRenameFile,
   onDeleteFile,
   onDeleteFiles,
@@ -259,6 +284,9 @@ export function DesignFilesPanel({
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const filterMenuRef = useRef<HTMLDivElement | null>(null);
   const [currentDir, setCurrentDir] = useState<string>('');
+  const uiSurfacesPromiseRef = useRef<Promise<ProjectUiSurface[]> | null>(null);
+  const requestedRenderedPreviewRef = useRef<Set<string>>(new Set());
+  const [renderedPreviewStates, setRenderedPreviewStates] = useState<Record<string, RenderedPreviewState>>({});
 
   // Derive immediate subdirectories and files at the current directory level
   // from the flat files list. Files with names like "a/b/c.html" contribute
@@ -541,6 +569,39 @@ export function DesignFilesPanel({
   }, [files, preview]);
 
   useEffect(() => {
+    uiSurfacesPromiseRef.current = null;
+    requestedRenderedPreviewRef.current = new Set();
+    setRenderedPreviewStates({});
+  }, [files]);
+
+  useEffect(() => {
+    if (!previewFile || previewFile.kind !== 'html') return;
+    if (requestedRenderedPreviewRef.current.has(previewFile.name)) return;
+    requestedRenderedPreviewRef.current.add(previewFile.name);
+    setRenderedPreviewStates((current) => ({
+      ...current,
+      [previewFile.name]: { status: 'loading' },
+    }));
+    let cancelled = false;
+    void renderedPreviewUrlForFile({
+      projectId,
+      file: previewFile,
+      loadUiSurfaces,
+    }).then((url) => {
+      if (cancelled) return;
+      setRenderedPreviewStates((current) => ({
+        ...current,
+        [previewFile.name]: url
+          ? { status: 'ready', url }
+          : { status: 'unavailable' },
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewFile, projectId]);
+
+  useEffect(() => {
     if (!menuPos) return;
     const close = () => setMenuPos(null);
     const onKey = (e: KeyboardEvent) => {
@@ -682,6 +743,42 @@ export function DesignFilesPanel({
     } finally {
       setDeleting(false);
     }
+  }
+
+  function loadUiSurfaces(): Promise<ProjectUiSurface[]> {
+    uiSurfacesPromiseRef.current ??= fetchProjectUiSurfaces(projectId);
+    return uiSurfacesPromiseRef.current;
+  }
+
+  async function handleOpenPreviewFile(file: ProjectFile) {
+    const renderedState = renderedPreviewStates[file.name];
+    if (renderedState?.status === 'ready') {
+      openRenderedPreviewInWorkspace(file, renderedState.url);
+      return;
+    }
+    const renderedUrl = await renderedPreviewUrlForFile({
+      projectId,
+      file,
+      loadUiSurfaces,
+    });
+    if (renderedUrl) {
+      openRenderedPreviewInWorkspace(file, renderedUrl);
+      return;
+    }
+    onOpenFile(file.name);
+  }
+
+  function openRenderedPreviewInWorkspace(file: ProjectFile, url: string) {
+    if (!onOpenRenderedPreview) {
+      onOpenFile(file.name);
+      return;
+    }
+    onOpenRenderedPreview({
+      tabId: `rendered-preview:${file.name}`,
+      title: file.name,
+      url,
+      sourceFile: file.name,
+    });
   }
 
   function toggleModifiedSection(section: ModifiedSection) {
@@ -1547,7 +1644,8 @@ export function DesignFilesPanel({
           key={previewFile.name}
           projectId={projectId}
           file={previewFile}
-          onOpen={() => onOpenFile(previewFile.name)}
+          renderedPreviewState={renderedPreviewStates[previewFile.name] ?? null}
+          onOpen={() => void handleOpenPreviewFile(previewFile)}
           onClose={() => setPreview(null)}
         />
       ) : null}
@@ -1614,14 +1712,56 @@ export function DesignFilesPanel({
   );
 }
 
+async function renderedPreviewUrlForFile({
+  projectId,
+  file,
+  loadUiSurfaces,
+}: {
+  projectId: string;
+  file: ProjectFile;
+  loadUiSurfaces: () => Promise<ProjectUiSurface[]>;
+}): Promise<string | null> {
+  const surfaces = await loadUiSurfaces();
+  const surface = surfaces.find((candidate) => candidate.previewFile === file.name);
+  if (!surface || surface.kind === 'static-html') return null;
+  if (surface.previewUrl) return surface.previewUrl;
+  if (surface.previewRuntimeRoot === null || surface.previewRuntimeRoot === undefined || !surface.previewPath) {
+    return null;
+  }
+  const response = await startProjectUiPreview(projectId, {
+    surfaceId: surface.id,
+    entryFile: surface.entryFile,
+  });
+  return previewRuntimeUrlForSurface(surface, response);
+}
+
+function previewRuntimeUrlForSurface(
+  surface: ProjectUiSurface,
+  response: ProjectUiPreviewRuntimeResponse | null,
+): string | null {
+  if (response?.status !== 'ready') return null;
+  if (response.url && (response.route === surface.previewPath || response.route === surface.route)) {
+    return response.url;
+  }
+  if (!response.baseUrl) return null;
+  return joinPreviewRuntimeUrl(response.baseUrl, surface.previewPath ?? surface.route ?? '/');
+}
+
+function joinPreviewRuntimeUrl(baseUrl: string, route: string | null): string {
+  const pathName = route?.startsWith('/') ? route : `/${route ?? ''}`;
+  return `${baseUrl.replace(/\/+$/u, '')}${pathName.replace(/\/+/g, '/')}`;
+}
+
 function DfPreview({
   projectId,
   file,
+  renderedPreviewState,
   onOpen,
   onClose,
 }: {
   projectId: string;
   file: ProjectFile;
+  renderedPreviewState?: RenderedPreviewState | null;
   onOpen: () => void;
   onClose: () => void;
 }) {
@@ -1647,7 +1787,17 @@ function DfPreview({
         ) : file.kind === 'image' || file.kind === 'sketch' ? (
           <img src={`${url}?v=${Math.round(file.mtime)}`} alt={file.name} />
         ) : file.kind === 'html' ? (
-          <HtmlPreviewThumbnail projectId={projectId} file={file} />
+          renderedPreviewState?.status === 'ready' ? (
+            <iframe
+              title={file.name}
+              src={renderedPreviewState.url}
+              sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+            />
+          ) : renderedPreviewState?.status === 'unavailable' ? (
+            <HtmlPreviewThumbnail projectId={projectId} file={file} />
+          ) : (
+            <RenderedPreviewPlaceholder />
+          )
         ) : file.kind === 'video' ? (
           <video
             src={`${url}?v=${Math.round(file.mtime)}`}
@@ -1707,6 +1857,15 @@ function DfPreview({
         </div>
       </div>
     </aside>
+  );
+}
+
+function RenderedPreviewPlaceholder() {
+  return (
+    <div className="df-rendered-preview-placeholder">
+      <Icon name="file-code" size={26} />
+      <span>Starting preview</span>
+    </div>
   );
 }
 

@@ -32,6 +32,7 @@ vi.mock('../../src/components/ChatComposer', () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -96,6 +97,7 @@ describe('ChatPane imported folder surfaces', () => {
 
   it('replaces empty starter prompts with discovered UI surfaces', async () => {
     const onRequestOpenFile = vi.fn();
+    const onOpenSurfacePreview = vi.fn();
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -147,6 +149,7 @@ describe('ChatPane imported folder surfaces', () => {
         file('bundle.js.map', 'code', 40),
       ],
       onRequestOpenFile,
+      onOpenSurfacePreview,
     });
 
     expect(screen.queryByText('chat.startTitle')).toBeNull();
@@ -179,10 +182,26 @@ describe('ChatPane imported folder surfaces', () => {
         expect.objectContaining({ path: 'fonts/Inter.woff2' }),
       ]),
     });
+    expect(within(firstCard).getByRole('button', { name: 'Cancel edit' })).toBeTruthy();
+
+    fireEvent.click(within(firstCard).getByRole('button', { name: 'Cancel edit' }));
+    expect(composerMocks.restoreDraft).toHaveBeenCalledTimes(2);
+    expect(composerMocks.restoreDraft).toHaveBeenLastCalledWith({
+      text: '',
+      attachments: [],
+      commentAttachments: [],
+    });
+    expect(within(firstCard).getByRole('button', { name: 'Edit this screen' })).toBeTruthy();
 
     fireEvent.click(within(firstCard).getByRole('button', { name: 'Open' }));
-    expect(onRequestOpenFile).toHaveBeenCalledTimes(1);
-    expect(onRequestOpenFile).toHaveBeenCalledWith('site/index.html');
+    expect(onRequestOpenFile).not.toHaveBeenCalled();
+    expect(onOpenSurfacePreview).toHaveBeenCalledTimes(1);
+    expect(onOpenSurfacePreview).toHaveBeenCalledWith({
+      id: 'home',
+      title: 'Home screen',
+      url: '/api/projects/project-1/raw/site/index.html?v=20',
+      sourceFile: 'site/index.html',
+    });
   });
 
   it('starts a managed runtime preview for source-mapped screens', async () => {
@@ -191,6 +210,7 @@ describe('ChatPane imported folder surfaces', () => {
       importedFrom: 'folder',
       entryFile: 'app/page.tsx',
     };
+    const onOpenSurfacePreview = vi.fn();
     const fetchMock = vi.fn(async (url, init) => {
       if (typeof url === 'string' && url.includes('/ui-surfaces')) {
         return json({
@@ -244,6 +264,7 @@ describe('ChatPane imported folder surfaces', () => {
         file('app/globals.css', 'code', 18),
       ],
       onRequestOpenFile: vi.fn(),
+      onOpenSurfacePreview,
     });
 
     const surface = await screen.findByTestId('chat-ui-surface-0');
@@ -254,6 +275,14 @@ describe('ChatPane imported folder surfaces', () => {
     });
     expect(within(surface).getByText('Live preview')).toBeTruthy();
     expect(screen.queryByText('No live preview')).toBeNull();
+
+    fireEvent.click(within(surface).getByRole('button', { name: 'Open' }));
+    expect(onOpenSurfacePreview).toHaveBeenCalledWith({
+      id: 'messages',
+      title: 'Messages screen',
+      url: 'http://127.0.0.1:43210/messages/preview',
+      sourceFile: 'app/messages/[conversationId]/page.tsx',
+    });
   });
 
   it('does not leave a runtime preview stuck when project files refresh mid-start', async () => {

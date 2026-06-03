@@ -17,6 +17,10 @@ vi.stubGlobal('localStorage', {
   clear: () => { lsStore.clear(); },
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 function extForKind(kind: ProjectFileKind): string {
   if (kind === 'html') return 'html';
   if (kind === 'image') return 'png';
@@ -170,6 +174,82 @@ describe('DesignFilesPanel grouping', () => {
     expect(screen.getByText('Name')).toBeTruthy();
     expect(document.querySelector('.df-th-kind')?.textContent).toContain('Kind');
     expect(screen.queryByText('Today')).toBeNull();
+  });
+
+  it('opens the rendered runtime URL for imported app HTML previews', async () => {
+    const onOpenRenderedPreview = vi.fn();
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'src-main-tsx',
+              label: 'Home screen',
+              route: '/',
+              kind: 'react-app',
+              confidence: 'medium',
+              framework: 'Vite',
+              entryFile: 'src/main.tsx',
+              previewFile: 'index.html',
+              previewRuntimeRoot: '',
+              previewPath: '/',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['index.html', 'src/main.tsx', 'src/App.tsx'],
+              styleFiles: ['src/index.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'react', importPath: 'react', kind: 'runtime' },
+              ],
+              reasons: ['React app entry and HTML shell detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: 'http://127.0.0.1:43210',
+          url: 'http://127.0.0.1:43210/',
+          route: '/',
+        });
+      }
+      return new Response('<div>raw preview</div>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    });
+    const { onOpenFile } = renderPanel(
+      [
+        file({ name: 'index.html', kind: 'html', mime: 'text/html', mtime: 20 }),
+        file({ name: 'src/main.tsx', kind: 'code', mime: 'text/typescript', mtime: 19 }),
+      ],
+      { onOpenRenderedPreview },
+    );
+
+    fireEvent.click(within(screen.getByTestId('design-file-row-index.html')).getByRole('button', { name: /index\.html/i }));
+    const preview = await screen.findByTestId('design-file-preview');
+    fireEvent.click(within(preview).getByRole('button', { name: 'Open' }));
+
+    await waitFor(() => {
+      expect(onOpenRenderedPreview).toHaveBeenCalledWith({
+        tabId: 'rendered-preview:index.html',
+        title: 'index.html',
+        url: 'http://127.0.0.1:43210/',
+        sourceFile: 'index.html',
+      });
+    });
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/test-project/ui-preview',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   it('can group files by modified date and collapse a date group', () => {
@@ -674,3 +754,10 @@ describe('DesignFilesPanel directory navigation', () => {
     expect(headerCheck?.textContent).toBe('☐');
   });
 });
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}

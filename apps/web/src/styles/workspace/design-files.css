@@ -913,6 +913,18 @@
   height: 100%;
   display: block;
 }
+.df-rendered-preview-placeholder {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  background: var(--bg);
+  font-size: 12px;
+  font-weight: 650;
+}
 .df-preview-thumb audio {
   width: calc(100% - 24px);
   position: absolute;

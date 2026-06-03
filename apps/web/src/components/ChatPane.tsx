@@ -58,6 +58,13 @@ type StarterPrompt = {
 
 type ImportedSurfacePreviewStates = Record<string, ProjectUiPreviewRuntimeResponse>;
 
+export interface ImportedSurfaceWorkspacePreview {
+  id: string;
+  title: string;
+  url: string;
+  sourceFile?: string | null;
+}
+
 const DEFAULT_STARTER_KEYS: Array<{
   icon: string;
   titleKey: keyof Dict;
@@ -213,31 +220,43 @@ function pickStarters(
   }));
 }
 
+const SURFACE_PREVIEW_VIEWPORT = {
+  width: 1280,
+  height: 720,
+} as const;
+
 function ImportedProjectSurfaces({
   projectId,
   surfaces,
   files,
   previewStates,
+  activeEditSurfaceId,
   onOpenFile,
   onEditSurface,
+  onCancelEditSurface,
+  onOpenPreview,
 }: {
   projectId: string | null;
   surfaces: ProjectUiSurface[];
   files: ProjectFile[];
   previewStates: ImportedSurfacePreviewStates;
+  activeEditSurfaceId: string | null;
   onOpenFile?: (name: string) => void;
   onEditSurface: (surface: ProjectUiSurface) => void;
+  onCancelEditSurface: () => void;
+  onOpenPreview?: (preview: ImportedSurfaceWorkspacePreview) => void;
 }) {
   const fileByName = useMemo(() => new Map(files.map((file) => [file.name, file])), [files]);
   return (
     <div className="chat-ui-surfaces" data-testid="chat-ui-surfaces">
       {surfaces.map((surface, index) => {
-        const previewFile = surface.previewFile ? fileByName.get(surface.previewFile) : null;
+        const previewFile = surface.previewFile ? fileByName.get(surface.previewFile) ?? null : null;
         const localFileCount = surfaceLocalFileCount(surface);
         const dependencyCount = surface.externalDependencies.length;
-        const canOpen = Boolean(surface.previewFile && onOpenFile);
         const previewState = previewStates[surface.id];
         const runtimePreviewUrl = surfaceRuntimePreviewUrl(surface, previewState);
+        const openPreviewUrl = surfaceOpenPreviewUrl(projectId, surface, previewFile, previewState);
+        const isEditing = activeEditSurfaceId === surface.id;
         return (
           <section
             key={surface.id || surface.entryFile}
@@ -247,11 +266,9 @@ function ImportedProjectSurfaces({
           >
             <div className="chat-ui-surface-preview" aria-hidden>
               {runtimePreviewUrl ? (
-                <iframe
+                <SurfaceLivePreviewFrame
                   title={surface.label}
                   src={runtimePreviewUrl}
-                  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
-                  loading="lazy"
                 />
               ) : projectId && previewFile && surface.previewStatus === 'live-preview' ? (
                 <ChatArtifactPreview projectId={projectId} file={previewFile} />
@@ -287,17 +304,34 @@ function ImportedProjectSurfaces({
               <div className="chat-ui-surface-actions">
                 <button
                   type="button"
-                  className="chat-ui-surface-primary"
-                  onClick={() => onEditSurface(surface)}
+                  className={isEditing ? 'chat-ui-surface-secondary' : 'chat-ui-surface-primary'}
+                  onClick={() => {
+                    if (isEditing) {
+                      onCancelEditSurface();
+                    } else {
+                      onEditSurface(surface);
+                    }
+                  }}
                   data-testid={`chat-ui-surface-edit-${index}`}
                 >
-                  Edit this screen
+                  {isEditing ? 'Cancel edit' : 'Edit this screen'}
                 </button>
-                {canOpen ? (
+                {openPreviewUrl || (surface.previewFile && onOpenFile) ? (
                   <button
                     type="button"
                     className="chat-ui-surface-secondary"
-                    onClick={() => onOpenFile?.(surface.previewFile!)}
+                    onClick={() => {
+                      if (openPreviewUrl && onOpenPreview) {
+                        onOpenPreview({
+                          id: surface.id || surface.entryFile,
+                          title: surface.label,
+                          url: openPreviewUrl,
+                          sourceFile: surface.previewFile ?? surface.entryFile,
+                        });
+                        return;
+                      }
+                      if (surface.previewFile) onOpenFile?.(surface.previewFile);
+                    }}
                   >
                     Open
                   </button>
@@ -307,6 +341,54 @@ function ImportedProjectSurfaces({
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function SurfaceLivePreviewFrame({
+  title,
+  src,
+}: {
+  title: string;
+  src: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (typeof window === 'undefined') return;
+    const syncWidth = () => {
+      setContainerWidth(container.getBoundingClientRect().width);
+    };
+    syncWidth();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', syncWidth);
+      return () => window.removeEventListener('resize', syncWidth);
+    }
+    const observer = new ResizeObserver(syncWidth);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  const scale = containerWidth > 0
+    ? containerWidth / SURFACE_PREVIEW_VIEWPORT.width
+    : 1;
+
+  return (
+    <div className="chat-ui-surface-live-frame" ref={containerRef}>
+      <iframe
+        title={title}
+        src={src}
+        sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+        loading="lazy"
+        style={{
+          width: `${SURFACE_PREVIEW_VIEWPORT.width}px`,
+          height: `${SURFACE_PREVIEW_VIEWPORT.height}px`,
+          transform: `scale(${scale})`,
+        }}
+      />
     </div>
   );
 }
@@ -562,6 +644,19 @@ function surfaceRuntimePreviewUrl(
   return joinRuntimePreviewUrl(previewState.baseUrl, surface.previewPath ?? surface.route ?? '/');
 }
 
+function surfaceOpenPreviewUrl(
+  projectId: string | null,
+  surface: ProjectUiSurface,
+  previewFile: ProjectFile | null,
+  previewState?: ProjectUiPreviewRuntimeResponse,
+): string | null {
+  const runtimePreviewUrl = surfaceRuntimePreviewUrl(surface, previewState);
+  if (runtimePreviewUrl) return runtimePreviewUrl;
+  if (!projectId || !previewFile) return null;
+  if (!surface.previewFile) return null;
+  return `${projectRawUrl(projectId, surface.previewFile)}?v=${Math.round(previewFile.mtime)}`;
+}
+
 function joinRuntimePreviewUrl(baseUrl: string, route: string | null): string {
   const pathName = route?.startsWith('/') ? route : `/${route ?? ''}`;
   return `${baseUrl.replace(/\/+$/u, '')}${pathName.replace(/\/+/g, '/')}`;
@@ -610,6 +705,7 @@ interface Props {
   // FileWorkspace's openRequest. Tool cards, attachment chips, and
   // produced-file chips all call this.
   onRequestOpenFile?: (name: string) => void;
+  onOpenSurfacePreview?: (preview: ImportedSurfaceWorkspacePreview) => void;
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
@@ -730,6 +826,7 @@ export function ChatPane({
   onUpdateQueuedSend,
   onSendQueuedNow,
   onRequestOpenFile,
+  onOpenSurfacePreview,
   onRequestPluginFolderAgentAction,
   activePluginActionPaths,
   hiddenPluginActionPaths,
@@ -847,6 +944,7 @@ export function ChatPane({
     surfaces: ProjectUiSurface[];
   }>({ status: 'idle', surfaces: [] });
   const [importedSurfacePreviewStates, setImportedSurfacePreviewStates] = useState<ImportedSurfacePreviewStates>({});
+  const [activeImportedSurfaceEditId, setActiveImportedSurfaceEditId] = useState<string | null>(null);
   const startedSurfacePreviewGroupsRef = useRef(new Set<string>());
   const activeImportedProjectIdRef = useRef<string | null>(null);
   useEffect(() => {
@@ -855,6 +953,7 @@ export function ChatPane({
       activeImportedProjectIdRef.current = null;
       setImportedProjectSurfacesState({ status: 'idle', surfaces: [] });
       setImportedSurfacePreviewStates({});
+      setActiveImportedSurfaceEditId(null);
       startedSurfacePreviewGroupsRef.current.clear();
       return;
     }
@@ -929,9 +1028,19 @@ export function ChatPane({
   }, [projectId, importedProjectSurfacesState.status, importedProjectSurfacesState.surfaces]);
   const showImportedFolderSurfaces = projectMetadata?.importedFrom === 'folder';
   const handleEditImportedSurface = (surface: ProjectUiSurface) => {
+    setActiveImportedSurfaceEditId(surface.id);
     composerRef.current?.restoreDraft({
       text: editSurfacePrompt(surface),
       attachments: surfaceAttachments(surface),
+    });
+    composerRef.current?.focus();
+  };
+  const handleCancelImportedSurfaceEdit = () => {
+    setActiveImportedSurfaceEditId(null);
+    composerRef.current?.restoreDraft({
+      text: '',
+      attachments: [],
+      commentAttachments: [],
     });
     composerRef.current?.focus();
   };
@@ -1515,8 +1624,11 @@ export function ChatPane({
                       surfaces={importedProjectSurfacesState.surfaces}
                       files={projectFiles}
                       previewStates={importedSurfacePreviewStates}
+                      activeEditSurfaceId={activeImportedSurfaceEditId}
                       onOpenFile={onRequestOpenFile}
                       onEditSurface={handleEditImportedSurface}
+                      onCancelEditSurface={handleCancelImportedSurfaceEdit}
+                      onOpenPreview={onOpenSurfacePreview}
                     />
                   ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loading' ? (
                     <ImportedProjectSurfacesLoading />
@@ -1780,6 +1892,7 @@ export function ChatPane({
             onSend={(prompt, attachments, commentAttachments, meta) => {
               pinnedToBottomRef.current = true;
               scrolledToFormRef.current = new Set();
+              setActiveImportedSurfaceEditId(null);
               onSend(prompt, attachments, commentAttachments, meta);
             }}
             onStop={onStop}
