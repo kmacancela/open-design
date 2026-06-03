@@ -1171,6 +1171,199 @@
   color: var(--text-muted);
   font-size: 12.5px;
 }
+.app .chat-ui-surfaces {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+.app .chat-ui-surface {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  overflow: hidden;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.app .chat-ui-surface:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-subtle);
+}
+.app .chat-ui-surface-preview {
+  aspect-ratio: 16 / 9;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.app .chat-ui-surface-preview-fallback {
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  padding: 18px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.app .chat-ui-surface-preview-fallback span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.app .chat-ui-surface-preview-fallback small {
+  max-width: 240px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.app .chat-ui-surface-preview iframe,
+.app .chat-ui-surface-preview img,
+.app .chat-ui-surface-preview video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  object-fit: cover;
+  background: #fff;
+  pointer-events: none;
+}
+.app .chat-ui-surface-body {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+}
+.app .chat-ui-surface-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.app .chat-ui-surface-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.app .chat-ui-surface-status {
+  flex: 0 0 auto;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  background: var(--bg);
+}
+.app .chat-ui-surface-path,
+.app .chat-ui-surface-files,
+.app .chat-ui-surface-deps {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.app .chat-ui-surface-path {
+  color: var(--text);
+}
+.app .chat-ui-surface-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.app .chat-ui-surface-meta span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  background: var(--bg);
+}
+.app .chat-ui-surface-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 2px;
+}
+.app .chat-ui-surface-actions button {
+  min-width: 0;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.app .chat-ui-surface-primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-foreground, #fff);
+}
+.app .chat-ui-surface-secondary {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.app .chat-ui-surfaces-empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  min-height: 210px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px;
+}
+.app .chat-ui-surfaces-empty strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.app .chat-ui-surfaces-empty span {
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.app .chat-ui-surface-skeleton {
+  pointer-events: none;
+}
+.app .chat-ui-surface-skeleton-line {
+  height: 10px;
+  width: 100%;
+  max-width: 220px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+}
+.app .chat-ui-surface-skeleton-title {
+  height: 13px;
+  max-width: 150px;
+}
+.app .chat-ui-surface-skeleton-short {
+  max-width: 110px;
+}
 .app .chat-connect-repo {
   max-width: none;
   padding: 10px 12px;

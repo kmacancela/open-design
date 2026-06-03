@@ -70,7 +70,7 @@ OD stands on four open-source shoulders:
 | **Visual directions** | 5 curated schools (Editorial Monocle · Modern Minimal · Warm Soft · Tech Utility · Brutalist Experimental) — each ships a deterministic OKLch palette + font stack ([`apps/daemon/src/prompts/directions.ts`](apps/daemon/src/prompts/directions.ts)) |
 | **Device frames** | iPhone 15 Pro · Pixel · iPad Pro · MacBook · Browser Chrome — pixel-accurate, shared across skills under [`assets/frames/`](assets/frames/) |
 | **Agent runtime** | Local daemon spawns the CLI in your project folder — agent gets real `Read`, `Write`, `Bash`, `WebFetch` against a real on-disk environment, with Windows `ENAMETOOLONG` fallbacks (stdin / prompt-file) on every adapter |
-| **Imports** | Drop a [Claude Design][cd] export ZIP onto the welcome dialog — `POST /api/import/claude-design` parses it into a real project so your agent can keep editing where Anthropic left off |
+| **Imports** | Drop a [Claude Design][cd] export ZIP onto the welcome dialog — `POST /api/import/claude-design` parses it into a real project so your agent can keep editing where Anthropic left off. Open an existing local project folder and OD maps its UI screens/routes to the frontend source, styles, fonts, images, and third-party UI packages that shape each screen. |
 | **Persistence** | SQLite at `.od/app.sqlite`: projects · conversations · messages · tabs · saved templates. Reopen tomorrow, todo card and open files are exactly where you left them. |
 | **Lifecycle** | One entry point: `pnpm tools-dev` (start / stop / run / status / logs / inspect / check) — boots daemon + web (+ desktop) under typed sidecar stamps |
 | **Desktop** | Optional Electron shell with sandboxed renderer + sidecar IPC (STATUS / EVAL / SCREENSHOT / CONSOLE / CLICK / SHUTDOWN) — drives `tools-dev inspect desktop screenshot` for E2E |
@@ -78,6 +78,19 @@ OD stands on four open-source shoulders:
 | **License** | Apache-2.0 |
 
 Linux AppImage packaging is available through the optional release lane and is covered by the Linux packaged smoke workflow, but public stable downloads remain gated until the release maintainers enable the Linux stable lane.
+
+### Existing project import
+
+Use **Open existing project** when you want OD to inspect a real app folder instead of starting from a blank design artifact. The imported folder stays in place on disk; OD stores the trusted folder path on the project and reads/writes files there.
+
+For imported frontend projects, OD discovers user-facing UI surfaces first: static HTML screens, Next.js routes, and React/Vite app entries. Static HTML screens render directly. Source-backed routes start a managed local preview from the imported app's own `dev` script when dependencies are already installed; otherwise the card stays source-mapped and tells you what setup is missing. Each surface records the local frontend files that make it render: route/component source, CSS/CSS modules, script/effect files, referenced images, local fonts, and package-level summaries for third-party UI libraries such as Radix, Tailwind, Framer Motion, lucide, charting libraries, or font packages. Third-party package source under `node_modules` is not copied into chat context; OD records the package/import/version summary and attaches only project-owned frontend files when you choose **Edit this screen**.
+
+Headless callers can read the same map with:
+
+```bash
+od project surfaces <projectId> --json
+od project preview <projectId> --entry app/page.tsx --json
+```
 
 [acd2]: https://github.com/VoltAgent/awesome-design-md
 [ads]: https://github.com/bergside/awesome-design-skills

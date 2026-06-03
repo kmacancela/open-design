@@ -50,6 +50,9 @@ import type {
   PromptTemplateDetail,
   PromptTemplateSummary,
   ProjectFile,
+  ProjectUiSurface,
+  ProjectUiPreviewRuntimeResponse,
+  ProjectUiSurfacesResponse,
   RenameProjectFileResponse,
   SkillDetail,
   SkillSummary,
@@ -1242,6 +1245,36 @@ export async function fetchProjectFiles(projectId: string): Promise<ProjectFile[
     return json.files ?? [];
   } catch {
     return [];
+  }
+}
+
+export async function fetchProjectUiSurfaces(projectId: string): Promise<ProjectUiSurface[]> {
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/ui-surfaces`, {
+      cache: 'no-store',
+    });
+    if (!resp.ok) return [];
+    const json = (await resp.json()) as ProjectUiSurfacesResponse;
+    return json.surfaces ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function startProjectUiPreview(
+  projectId: string,
+  input: { surfaceId?: string | null; entryFile?: string | null },
+): Promise<ProjectUiPreviewRuntimeResponse | null> {
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/ui-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!resp.ok) return null;
+    return (await resp.json()) as ProjectUiPreviewRuntimeResponse;
+  } catch {
+    return null;
   }
 }
 

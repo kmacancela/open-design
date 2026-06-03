@@ -29,6 +29,8 @@ import {
   writeProjectManifest,
 } from './project-locations.js';
 import { auditDesignSystemPackage } from './tools-connectors-cli.js';
+import { discoverProjectUiSurfaces } from './project-ui-surfaces.js';
+import { startProjectUiPreviewRuntime } from './project-ui-preview-runtime.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'validation'> {}
 
@@ -1323,6 +1325,75 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
       const body = { files };
       res.json(body);
+    } catch (err: any) {
+      sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.get('/api/projects/:id/ui-surfaces', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) {
+        sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+        return;
+      }
+      const files = await listFiles(PROJECTS_DIR, req.params.id, {
+        metadata: project.metadata,
+      });
+      const projectRoot = resolveProjectDir(PROJECTS_DIR, project.id, project.metadata);
+      const surfaces = await discoverProjectUiSurfaces({
+        projectRoot,
+        files,
+        entryFile: project.metadata?.entryFile ?? null,
+      });
+      /** @type {import('@open-design/contracts').ProjectUiSurfacesResponse} */
+      const body = { surfaces, generatedAt: new Date().toISOString() };
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(body);
+    } catch (err: any) {
+      sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.post('/api/projects/:id/ui-preview', async (req, res) => {
+    try {
+      const project = getProject(db, req.params.id);
+      if (!project) {
+        sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+        return;
+      }
+      const body = (req.body ?? {}) as { surfaceId?: unknown; entryFile?: unknown };
+      const surfaceId = typeof body.surfaceId === 'string' ? body.surfaceId : null;
+      const entryFile = typeof body.entryFile === 'string' ? body.entryFile : null;
+      if (!surfaceId && !entryFile) {
+        sendApiError(res, 400, 'BAD_REQUEST', 'surfaceId or entryFile is required');
+        return;
+      }
+      const files = await listFiles(PROJECTS_DIR, req.params.id, {
+        metadata: project.metadata,
+      });
+      const projectRoot = resolveProjectDir(PROJECTS_DIR, project.id, project.metadata);
+      const surfaces = await discoverProjectUiSurfaces({
+        projectRoot,
+        files,
+        entryFile: project.metadata?.entryFile ?? null,
+      });
+      const surface = surfaces.find((candidate) =>
+        (surfaceId && candidate.id === surfaceId) ||
+        (entryFile && candidate.entryFile === entryFile),
+      );
+      if (!surface) {
+        sendApiError(res, 404, 'SURFACE_NOT_FOUND', 'UI surface not found');
+        return;
+      }
+      const preview = await startProjectUiPreviewRuntime({
+        projectId: project.id,
+        projectRoot,
+        stateRoot: path.join(PROJECTS_DIR, project.id),
+        surface,
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(preview);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }

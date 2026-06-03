@@ -4,7 +4,7 @@ import { trackChatPanelClick } from '../analytics/events';
 import { useT } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
-import { projectRawUrl } from '../providers/registry';
+import { fetchProjectUiSurfaces, projectRawUrl, startProjectUiPreview } from '../providers/registry';
 import type { TodoItem } from '../runtime/todos';
 import type { AppliedPluginSnapshot } from '@open-design/contracts';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
@@ -15,7 +15,7 @@ import {
 } from '../design-system-auto-prompt';
 import { latestTodoWriteInputForPinnedCard } from '../runtime/todos';
 import { TodoCard } from './ToolCard';
-import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, SkillSummary } from '../types';
+import type { AppConfig, ChatAttachment, ChatCommentAttachment, ChatMessage, ChatMessageFeedbackChange, Conversation, DesignSystemSummary, PreviewComment, Project, ProjectFile, ProjectMetadata, ProjectUiPreviewRuntimeResponse, ProjectUiSurface, SkillSummary } from '../types';
 import { dayKey, dayLabel, exactDateTime, messageTime, relativeTimeLong } from '../utils/chatTime';
 import { commentTargetDisplayName, commentsToAttachments, simplePositionLabel } from '../comments';
 import { AssistantMessage } from './AssistantMessage';
@@ -26,7 +26,6 @@ import {
   type ChatComposerHandle,
   type ChatSendMeta,
 } from './ChatComposer';
-import { listDesignArtifactCandidates } from './design-files/designArtifacts';
 import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
 import { Icon, type IconName } from './Icon';
 import { repoConnectCopy } from './design-system-github-evidence';
@@ -57,6 +56,8 @@ type StarterPrompt = {
   prompt: string;
 };
 
+type ImportedSurfacePreviewStates = Record<string, ProjectUiPreviewRuntimeResponse>;
+
 const DEFAULT_STARTER_KEYS: Array<{
   icon: string;
   titleKey: keyof Dict;
@@ -82,9 +83,6 @@ const DEFAULT_STARTER_KEYS: Array<{
     promptKey: 'chat.example3Prompt',
   },
 ];
-
-const IMPORTED_ARTIFACTS_INITIAL_VISIBLE_COUNT = 5;
-const IMPORTED_ARTIFACTS_REVEAL_COUNT = 5;
 
 const IMAGE_STARTERS: StarterPrompt[] = [
   {
@@ -215,107 +213,148 @@ function pickStarters(
   }));
 }
 
-function sortArtifactsByModified(files: ProjectFile[]): ProjectFile[] {
-  return [...files].sort(
-    (a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name),
+function ImportedProjectSurfaces({
+  projectId,
+  surfaces,
+  files,
+  previewStates,
+  onOpenFile,
+  onEditSurface,
+}: {
+  projectId: string | null;
+  surfaces: ProjectUiSurface[];
+  files: ProjectFile[];
+  previewStates: ImportedSurfacePreviewStates;
+  onOpenFile?: (name: string) => void;
+  onEditSurface: (surface: ProjectUiSurface) => void;
+}) {
+  const fileByName = useMemo(() => new Map(files.map((file) => [file.name, file])), [files]);
+  return (
+    <div className="chat-ui-surfaces" data-testid="chat-ui-surfaces">
+      {surfaces.map((surface, index) => {
+        const previewFile = surface.previewFile ? fileByName.get(surface.previewFile) : null;
+        const localFileCount = surfaceLocalFileCount(surface);
+        const dependencyCount = surface.externalDependencies.length;
+        const canOpen = Boolean(surface.previewFile && onOpenFile);
+        const previewState = previewStates[surface.id];
+        const runtimePreviewUrl = surfaceRuntimePreviewUrl(surface, previewState);
+        return (
+          <section
+            key={surface.id || surface.entryFile}
+            className="chat-ui-surface"
+            data-preview-status={previewState?.status ?? surface.previewStatus}
+            data-testid={`chat-ui-surface-${index}`}
+          >
+            <div className="chat-ui-surface-preview" aria-hidden>
+              {runtimePreviewUrl ? (
+                <iframe
+                  title={surface.label}
+                  src={runtimePreviewUrl}
+                  sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
+                  loading="lazy"
+                />
+              ) : projectId && previewFile && surface.previewStatus === 'live-preview' ? (
+                <ChatArtifactPreview projectId={projectId} file={previewFile} />
+              ) : (
+                <SurfacePreviewFallback surface={surface} previewState={previewState} />
+              )}
+            </div>
+            <div className="chat-ui-surface-body">
+              <div className="chat-ui-surface-head">
+                <span className="chat-ui-surface-title" title={surface.label}>
+                  {surface.label}
+                </span>
+                <span className="chat-ui-surface-status">
+                  {surfacePreviewLabel(surface.previewStatus, previewState?.status)}
+                </span>
+              </div>
+              <div className="chat-ui-surface-path" title={surface.route ?? surface.entryFile}>
+                {surface.route ?? surface.entryFile}
+              </div>
+              <div className="chat-ui-surface-meta">
+                <span>{surface.framework ?? surfaceKindLabel(surface.kind)}</span>
+                <span>{localFileCount} frontend files</span>
+                {dependencyCount > 0 ? <span>{dependencyCount} packages</span> : null}
+              </div>
+              <div className="chat-ui-surface-files" title={surfaceFileSummary(surface)}>
+                {surfaceFileSummary(surface)}
+              </div>
+              {surface.externalDependencies.length > 0 ? (
+                <div className="chat-ui-surface-deps" title={externalDependencySummary(surface)}>
+                  {externalDependencySummary(surface)}
+                </div>
+              ) : null}
+              <div className="chat-ui-surface-actions">
+                <button
+                  type="button"
+                  className="chat-ui-surface-primary"
+                  onClick={() => onEditSurface(surface)}
+                  data-testid={`chat-ui-surface-edit-${index}`}
+                >
+                  Edit this screen
+                </button>
+                {canOpen ? (
+                  <button
+                    type="button"
+                    className="chat-ui-surface-secondary"
+                    onClick={() => onOpenFile?.(surface.previewFile!)}
+                  >
+                    Open
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
-function ImportedFolderArtifacts({
-  projectId,
-  files,
-  onOpenFile,
-  t,
-}: {
-  projectId: string | null;
-  files: ProjectFile[];
-  onOpenFile?: (name: string) => void;
-  t: TranslateFn;
-}) {
-  const [visibleCount, setVisibleCount] = useState(IMPORTED_ARTIFACTS_INITIAL_VISIBLE_COUNT);
-
-  useEffect(() => {
-    setVisibleCount(IMPORTED_ARTIFACTS_INITIAL_VISIBLE_COUNT);
-  }, [files]);
-
-  if (files.length === 0) {
-    return (
-      <div className="chat-design-artifacts-empty" data-testid="chat-design-artifacts-empty">
-        {t('designFiles.empty')}
-      </div>
-    );
-  }
-
-  const visibleFiles = files.slice(0, visibleCount);
-  const hiddenCount = Math.max(0, files.length - visibleFiles.length);
-  const revealCount = Math.min(IMPORTED_ARTIFACTS_REVEAL_COUNT, hiddenCount);
-
+function ImportedProjectSurfacesLoading() {
   return (
-    <div className="chat-design-artifacts" data-testid="chat-design-artifacts">
-      {visibleFiles.map((file, index) => {
-        const openable = Boolean(onOpenFile);
-        const openLabel = `${t('designFiles.previewOpen')} ${file.name}`;
-        const openFile = () => {
-          onOpenFile?.(file.name);
-        };
-        return (
-          <div
-            key={file.name}
-            className="chat-design-artifact"
-            data-kind={file.kind}
-            data-file-name={file.name}
-            data-testid={`chat-design-artifact-${index}`}
-            role={openable ? 'button' : 'listitem'}
-            tabIndex={openable ? 0 : undefined}
-            title={openLabel}
-            aria-label={openLabel}
-            onDoubleClick={openable ? openFile : undefined}
-            onKeyDown={
-              openable
-                ? (event) => {
-                    if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
-                    openFile();
-                  }
-                : undefined
-            }
-          >
-            <div className="chat-design-artifact-preview" aria-hidden>
-              <ChatArtifactPreview projectId={projectId} file={file} />
-            </div>
-            <div className="chat-design-artifact-meta">
-              <span className="chat-design-artifact-name" title={file.name}>
-                {file.name}
-              </span>
-              <span className="chat-design-artifact-kind">
-                {chatArtifactKindLabel(file.kind, t)}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-      {hiddenCount > 0 ? (
-        <button
-          type="button"
-          className="chat-design-artifact chat-design-artifact-more"
-          data-testid="chat-design-artifacts-more"
-          aria-label={`Show ${revealCount} more design files`}
-          title={`Show ${revealCount} more design files`}
-          onClick={() => {
-            setVisibleCount((current) =>
-              Math.min(files.length, current + IMPORTED_ARTIFACTS_REVEAL_COUNT),
-            );
-          }}
-        >
-          <span className="chat-design-artifact-more-icon" aria-hidden>
-            +
+    <div className="chat-ui-surfaces chat-ui-surfaces-loading" data-testid="chat-ui-surfaces-loading">
+      <section className="chat-ui-surface chat-ui-surface-skeleton" aria-label="Finding UI screens">
+        <div className="chat-ui-surface-preview" aria-hidden>
+          <span className="chat-ui-surface-preview-fallback">
+            <Icon name="file-code" size={28} />
+            <span>Finding screens</span>
+            <small>Mapping routes and frontend source files</small>
           </span>
-          <span className="chat-design-artifact-more-count">
-            {hiddenCount} more
-          </span>
-        </button>
-      ) : null}
+        </div>
+        <div className="chat-ui-surface-body">
+          <span className="chat-ui-surface-skeleton-line chat-ui-surface-skeleton-title" />
+          <span className="chat-ui-surface-skeleton-line" />
+          <span className="chat-ui-surface-skeleton-line chat-ui-surface-skeleton-short" />
+        </div>
+      </section>
     </div>
+  );
+}
+
+function ImportedProjectSurfacesEmpty() {
+  return (
+    <div className="chat-ui-surfaces-empty" data-testid="chat-ui-surfaces-empty">
+      <Icon name="file-code" size={30} />
+      <strong>No UI screens found</strong>
+      <span>Design Files still has the full project tree, but OD did not find a renderable screen or route to edit.</span>
+    </div>
+  );
+}
+
+function SurfacePreviewFallback({
+  surface,
+  previewState,
+}: {
+  surface: ProjectUiSurface;
+  previewState?: ProjectUiPreviewRuntimeResponse;
+}) {
+  return (
+    <span className="chat-ui-surface-preview-fallback">
+      <Icon name={surface.kind === 'static-html' ? 'file-code' : 'file'} size={28} />
+      <span>{surfacePreviewShortLabel(surface.previewStatus, previewState?.status)}</span>
+      <small>{surfacePreviewDetail(surface, previewState)}</small>
+    </span>
   );
 }
 
@@ -381,17 +420,151 @@ function chatArtifactShortKind(kind: ProjectFile['kind']): string {
   return 'FILE';
 }
 
-function chatArtifactKindLabel(kind: ProjectFile['kind'], t: TranslateFn): string {
-  if (kind === 'html') return t('designFiles.kindHtml');
-  if (kind === 'image') return t('designFiles.kindImage');
-  if (kind === 'sketch') return t('designFiles.kindSketch');
-  if (kind === 'video') return 'Video';
-  if (kind === 'audio') return 'Audio';
-  if (kind === 'pdf') return t('designFiles.kindPdf');
-  if (kind === 'document') return t('designFiles.kindDocument');
-  if (kind === 'presentation') return t('designFiles.kindPresentation');
-  if (kind === 'spreadsheet') return t('designFiles.kindSpreadsheet');
-  return t('designFiles.kindBinary');
+function surfaceLocalFileCount(surface: ProjectUiSurface): number {
+  return uniqueSurfaceFiles(surface).length;
+}
+
+function surfaceAttachments(surface: ProjectUiSurface): ChatAttachment[] {
+  return uniqueSurfaceFiles(surface).map((file) => ({
+    path: file,
+    name: file.split('/').pop() || file,
+    kind: looksLikeImagePath(file) ? 'image' : 'file',
+  }));
+}
+
+function uniqueSurfaceFiles(surface: ProjectUiSurface): string[] {
+  const ordered = [
+    surface.entryFile,
+    surface.previewFile ?? '',
+    ...surface.sourceFiles,
+    ...surface.styleFiles,
+    ...surface.scriptFiles,
+    ...surface.assetFiles,
+    ...surface.fontFiles,
+  ];
+  return [...new Set(ordered.filter(Boolean))];
+}
+
+function editSurfacePrompt(surface: ProjectUiSurface): string {
+  const lines = [
+    `Edit this screen: ${surface.label}.`,
+    surface.route ? `Route: ${surface.route}.` : `Entry file: ${surface.entryFile}.`,
+    'Use the attached frontend files as the source of truth for layout, styling, assets, fonts, and interactions.',
+  ];
+  if (surface.externalDependencies.length > 0) {
+    lines.push(`External UI packages used here: ${externalDependencySummary(surface)}.`);
+  }
+  lines.push('Do not rewrite unrelated backend, test, build-output, or dependency files.');
+  return lines.join('\n');
+}
+
+function surfaceFileSummary(surface: ProjectUiSurface): string {
+  const parts = [
+    countLabel(surface.sourceFiles.length, 'source'),
+    countLabel(surface.styleFiles.length, 'style'),
+    countLabel(surface.scriptFiles.length, 'script'),
+    countLabel(surface.assetFiles.length, 'asset'),
+    countLabel(surface.fontFiles.length, 'font'),
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : 'No frontend dependencies mapped';
+}
+
+function externalDependencySummary(surface: ProjectUiSurface): string {
+  return surface.externalDependencies
+    .map((dep: ProjectUiSurface['externalDependencies'][number]) => dep.packageName)
+    .filter((value: string, index: number, all: string[]) => all.indexOf(value) === index)
+    .slice(0, 6)
+    .join(', ');
+}
+
+function countLabel(count: number, label: string): string | null {
+  if (count <= 0) return null;
+  return `${count} ${label}${count === 1 ? '' : 's'}`;
+}
+
+function surfacePreviewLabel(
+  status: ProjectUiSurface['previewStatus'],
+  runtimeStatus?: ProjectUiPreviewRuntimeResponse['status'],
+): string {
+  if (runtimeStatus === 'ready') return 'Live preview';
+  if (runtimeStatus === 'starting') return 'Starting preview';
+  if (runtimeStatus === 'failed') return 'Preview failed';
+  if (runtimeStatus === 'needs-setup') return 'Needs setup';
+  if (runtimeStatus === 'unsupported') return 'No preview';
+  if (status === 'live-preview') return 'Live preview';
+  if (status === 'needs-setup') return 'Needs setup';
+  if (status === 'source-mapped') return 'Source only';
+  return 'No preview';
+}
+
+function surfacePreviewShortLabel(
+  status: ProjectUiSurface['previewStatus'],
+  runtimeStatus?: ProjectUiPreviewRuntimeResponse['status'],
+): string {
+  if (runtimeStatus === 'ready') return 'LIVE';
+  if (runtimeStatus === 'starting') return 'Starting preview';
+  if (runtimeStatus === 'failed') return 'Preview failed';
+  if (runtimeStatus === 'needs-setup') return 'SETUP';
+  if (runtimeStatus === 'unsupported') return 'No preview';
+  if (status === 'live-preview') return 'LIVE';
+  if (status === 'needs-setup') return 'SETUP';
+  if (status === 'source-mapped') return 'No live preview';
+  return 'No preview';
+}
+
+function surfacePreviewDetail(
+  surface: ProjectUiSurface,
+  previewState?: ProjectUiPreviewRuntimeResponse,
+): string {
+  if (previewState?.status === 'starting') return 'Starting the imported app runtime';
+  if (previewState?.status === 'failed') return previewState.error ?? 'Could not start the app runtime';
+  if (previewState?.status === 'needs-setup') return previewState.error ?? 'Install dependencies before previewing';
+  if (previewState?.status === 'unsupported') return previewState.error ?? 'No app runtime was found';
+  if (surface.previewStatus === 'needs-setup') return 'Install or run the app to render this screen';
+  if (surface.previewStatus === 'source-mapped') {
+    const framework = surface.framework ?? surfaceKindLabel(surface.kind);
+    return `${framework} needs a running app runtime`;
+  }
+  if (surface.previewStatus === 'preview-unavailable') return 'No renderable HTML file was found';
+  return 'Rendered from the imported HTML file';
+}
+
+function surfaceKindLabel(kind: ProjectUiSurface['kind']): string {
+  if (kind === 'static-html') return 'HTML';
+  if (kind === 'next-route') return 'Next route';
+  if (kind === 'react-app') return 'React app';
+  if (kind === 'source-entry') return 'Source entry';
+  return 'UI screen';
+}
+
+function looksLikeImagePath(path: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|avif|svg)$/i.test(path);
+}
+
+function shouldStartRuntimePreview(surface: ProjectUiSurface): boolean {
+  return surface.kind !== 'static-html' && surface.previewRuntimeRoot != null && Boolean(surface.previewPath);
+}
+
+function surfaceRuntimeGroupKey(projectId: string, surface: ProjectUiSurface): string {
+  return `${projectId}:${surface.previewRuntimeRoot ?? ''}`;
+}
+
+function surfaceRuntimePreviewUrl(
+  surface: ProjectUiSurface,
+  previewState?: ProjectUiPreviewRuntimeResponse,
+): string | null {
+  if (surface.previewUrl) return surface.previewUrl;
+  if (previewState?.status !== 'ready') return null;
+  if (previewState.url && (previewState.route === surface.previewPath || previewState.route === surface.route)) {
+    return previewState.url;
+  }
+  if (!previewState.baseUrl) return null;
+  return joinRuntimePreviewUrl(previewState.baseUrl, surface.previewPath ?? surface.route ?? '/');
+}
+
+function joinRuntimePreviewUrl(baseUrl: string, route: string | null): string {
+  const pathName = route?.startsWith('/') ? route : `/${route ?? ''}`;
+  return `${baseUrl.replace(/\/+$/u, '')}${pathName.replace(/\/+/g, '/')}`;
 }
 
 interface Props {
@@ -669,16 +842,99 @@ export function ChatPane({
           runId: retryAssistant.runId ?? null,
         }
       : null;
-  const importedFolderArtifacts = useMemo(
-    () =>
-      projectMetadata?.importedFrom === 'folder'
-        ? sortArtifactsByModified(
-            listDesignArtifactCandidates(projectFiles, projectMetadata.entryFile),
-          )
-        : [],
-    [projectFiles, projectMetadata?.entryFile, projectMetadata?.importedFrom],
-  );
-  const showImportedFolderArtifacts = projectMetadata?.importedFrom === 'folder';
+  const [importedProjectSurfacesState, setImportedProjectSurfacesState] = useState<{
+    status: 'idle' | 'loading' | 'loaded';
+    surfaces: ProjectUiSurface[];
+  }>({ status: 'idle', surfaces: [] });
+  const [importedSurfacePreviewStates, setImportedSurfacePreviewStates] = useState<ImportedSurfacePreviewStates>({});
+  const startedSurfacePreviewGroupsRef = useRef(new Set<string>());
+  const activeImportedProjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || projectMetadata?.importedFrom !== 'folder') {
+      activeImportedProjectIdRef.current = null;
+      setImportedProjectSurfacesState({ status: 'idle', surfaces: [] });
+      setImportedSurfacePreviewStates({});
+      startedSurfacePreviewGroupsRef.current.clear();
+      return;
+    }
+    activeImportedProjectIdRef.current = projectId;
+    setImportedProjectSurfacesState((current) => ({
+      status: 'loading',
+      surfaces: current.surfaces,
+    }));
+    void fetchProjectUiSurfaces(projectId).then((surfaces) => {
+      if (!cancelled) setImportedProjectSurfacesState({ status: 'loaded', surfaces });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, projectMetadata?.importedFrom, projectFiles]);
+  useEffect(() => {
+    if (!projectId || importedProjectSurfacesState.status !== 'loaded') return;
+    const groups = new Map<string, ProjectUiSurface[]>();
+    for (const surface of importedProjectSurfacesState.surfaces) {
+      if (!shouldStartRuntimePreview(surface)) continue;
+      const key = surfaceRuntimeGroupKey(projectId, surface);
+      const existing = groups.get(key) ?? [];
+      existing.push(surface);
+      groups.set(key, existing);
+    }
+    for (const [groupKey, groupSurfaces] of groups) {
+      if (startedSurfacePreviewGroupsRef.current.has(groupKey)) continue;
+      startedSurfacePreviewGroupsRef.current.add(groupKey);
+      setImportedSurfacePreviewStates((current) => {
+        const next = { ...current };
+        for (const surface of groupSurfaces) {
+          next[surface.id] = {
+            status: 'starting',
+            runtimeRoot: surface.previewRuntimeRoot,
+            baseUrl: null,
+            url: null,
+            route: surface.previewPath ?? surface.route,
+          };
+        }
+        return next;
+      });
+      const firstSurface = groupSurfaces[0]!;
+      void startProjectUiPreview(projectId, {
+        surfaceId: firstSurface.id,
+        entryFile: firstSurface.entryFile,
+      }).then((response) => {
+        if (activeImportedProjectIdRef.current !== projectId) return;
+        const resolved = response ?? {
+          status: 'failed',
+          runtimeRoot: firstSurface.previewRuntimeRoot,
+          baseUrl: null,
+          url: null,
+          route: firstSurface.previewPath ?? firstSurface.route,
+          error: 'Preview runtime request failed.',
+        } satisfies ProjectUiPreviewRuntimeResponse;
+        setImportedSurfacePreviewStates((current) => {
+          const next = { ...current };
+          for (const surface of groupSurfaces) {
+            const route = surface.previewPath ?? surface.route;
+            next[surface.id] = {
+              ...resolved,
+              route,
+              url: resolved.status === 'ready' && resolved.baseUrl
+                ? joinRuntimePreviewUrl(resolved.baseUrl, route)
+                : resolved.url,
+            };
+          }
+          return next;
+        });
+      });
+    }
+  }, [projectId, importedProjectSurfacesState.status, importedProjectSurfacesState.surfaces]);
+  const showImportedFolderSurfaces = projectMetadata?.importedFrom === 'folder';
+  const handleEditImportedSurface = (surface: ProjectUiSurface) => {
+    composerRef.current?.restoreDraft({
+      text: editSurfacePrompt(surface),
+      attachments: surfaceAttachments(surface),
+    });
+    composerRef.current?.focus();
+  };
   const composerDraftStorageKey = projectId && activeConversationId
     ? `od:chat-composer:draft:${projectId}:${activeConversationId}`
     : undefined;
@@ -1253,13 +1509,19 @@ export function ChatPane({
             <div className="chat-log" ref={logRef}>
               {messages.length === 0 ? (
                 <div className="chat-empty-wrap">
-                  {showImportedFolderArtifacts ? (
-                    <ImportedFolderArtifacts
+                  {showImportedFolderSurfaces && importedProjectSurfacesState.surfaces.length > 0 ? (
+                    <ImportedProjectSurfaces
                       projectId={projectId}
-                      files={importedFolderArtifacts}
+                      surfaces={importedProjectSurfacesState.surfaces}
+                      files={projectFiles}
+                      previewStates={importedSurfacePreviewStates}
                       onOpenFile={onRequestOpenFile}
-                      t={t}
+                      onEditSurface={handleEditImportedSurface}
                     />
+                  ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loading' ? (
+                    <ImportedProjectSurfacesLoading />
+                  ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loaded' ? (
+                    <ImportedProjectSurfacesEmpty />
                   ) : (
                     <>
                       <div className="chat-empty">
