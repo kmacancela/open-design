@@ -1,6 +1,6 @@
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { Express, Response } from 'express';
+import type { Express, Request, Response } from 'express';
 import {
   defaultScenarioPluginIdForProjectMetadata,
   type PluginManifest,
@@ -30,7 +30,10 @@ import {
 } from './project-locations.js';
 import { auditDesignSystemPackage } from './tools-connectors-cli.js';
 import { discoverProjectUiSurfaces } from './project-ui-surfaces.js';
-import { startProjectUiPreviewRuntime } from './project-ui-preview-runtime.js';
+import {
+  projectUiPreviewRuntimeProxyTarget,
+  startProjectUiPreviewRuntime,
+} from './project-ui-preview-runtime.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'validation'> {}
 
@@ -151,6 +154,183 @@ function injectUrlPreviewScrollBridge(html: string): string {
     return `${html.slice(0, bodyCloseIndex)}${URL_PREVIEW_SCROLL_BRIDGE}${html.slice(bodyCloseIndex)}`;
   }
   return `${html}${URL_PREVIEW_SCROLL_BRIDGE}`;
+}
+
+async function proxyProjectUiPreviewRequest(
+  req: Request,
+  res: Response,
+  target: { baseUrl: string; proxyBasePath: string },
+  suffix: string,
+): Promise<void> {
+  const query = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+  const upstreamUrl = `${target.baseUrl}${proxySuffixPath(suffix)}${query}`;
+  const upstream = await fetch(upstreamUrl, {
+    method: req.method,
+    headers: proxyRequestHeaders(req),
+    ...(proxyRequestBody(req) ?? {}),
+  });
+  const contentType = upstream.headers.get('content-type') ?? '';
+  const transformText = shouldTransformPreviewProxyText(contentType);
+
+  res.status(upstream.status);
+  for (const [name, value] of upstream.headers) {
+    if (shouldSkipPreviewProxyHeader(name)) continue;
+    res.setHeader(name, value);
+  }
+  res.setHeader('Cache-Control', 'no-store');
+
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+
+  if (transformText) {
+    const text = await upstream.text();
+    if (contentType) res.setHeader('Content-Type', contentType);
+    res.send(transformPreviewProxyText(text, contentType, target.proxyBasePath));
+    return;
+  }
+
+  const bytes = Buffer.from(await upstream.arrayBuffer());
+  res.setHeader('Content-Length', String(bytes.byteLength));
+  res.send(bytes);
+}
+
+function proxyRequestHeaders(req: Request): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (
+      lower === 'host' ||
+      lower === 'origin' ||
+      lower === 'referer' ||
+      lower === 'content-length' ||
+      lower === 'accept-encoding' ||
+      isHopByHopPreviewProxyHeader(lower)
+    ) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else if (typeof value === 'string') {
+      headers.set(name, value);
+    }
+  }
+  return headers;
+}
+
+function proxyRequestBody(req: Request): { body: string | Uint8Array } | null {
+  if (req.method === 'GET' || req.method === 'HEAD') return null;
+  const body = req.body as unknown;
+  if (body == null) return null;
+  if (typeof body === 'string' || body instanceof Uint8Array) return { body };
+  return { body: JSON.stringify(body) };
+}
+
+function proxySuffixPath(suffix: string): string {
+  const normalized = `/${suffix}`.replace(/\/+/g, '/');
+  return normalized === '/' ? '/' : normalized;
+}
+
+function shouldTransformPreviewProxyText(contentType: string): boolean {
+  return /(?:^|;|\s)(?:text\/html|text\/css|application\/javascript|text\/javascript|application\/x-javascript|application\/json)\b/i.test(contentType);
+}
+
+function shouldSkipPreviewProxyHeader(name: string): boolean {
+  return new Set([
+    'content-length',
+    'content-encoding',
+    'content-security-policy',
+    'cross-origin-embedder-policy',
+    'cross-origin-opener-policy',
+    'cross-origin-resource-policy',
+    'set-cookie',
+    ...HOP_BY_HOP_PREVIEW_PROXY_HEADERS,
+    'x-frame-options',
+  ]).has(name.toLowerCase());
+}
+
+const HOP_BY_HOP_PREVIEW_PROXY_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'trailers',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+function isHopByHopPreviewProxyHeader(name: string): boolean {
+  return HOP_BY_HOP_PREVIEW_PROXY_HEADERS.has(name.toLowerCase());
+}
+
+function transformPreviewProxyText(text: string, contentType: string, proxyBasePath: string): string {
+  if (/text\/html/i.test(contentType)) {
+    return rewritePreviewProxyScriptPaths(
+      rewritePreviewProxyCssPaths(
+        rewritePreviewProxyHtmlPaths(injectPreviewProxyBase(text, proxyBasePath), proxyBasePath),
+        proxyBasePath,
+      ),
+      proxyBasePath,
+    );
+  }
+  if (/text\/css/i.test(contentType)) return rewritePreviewProxyCssPaths(text, proxyBasePath);
+  if (/(?:javascript|json)/i.test(contentType)) return rewritePreviewProxyScriptPaths(text, proxyBasePath);
+  return text;
+}
+
+function injectPreviewProxyBase(html: string, proxyBasePath: string): string {
+  if (/<base\b/i.test(html)) return html;
+  const tag = `<base href="${proxyBasePath}/">`;
+  const headOpen = html.search(/<head(?:\s[^>]*)?>/i);
+  if (headOpen >= 0) {
+    const close = html.indexOf('>', headOpen);
+    if (close >= 0) return `${html.slice(0, close + 1)}${tag}${html.slice(close + 1)}`;
+  }
+  return `${tag}${html}`;
+}
+
+function rewritePreviewProxyHtmlPaths(html: string, proxyBasePath: string): string {
+  return html
+    .replace(
+      /\b(src|href|action|poster)\s*=\s*(["'])\/(?!\/|api\/projects\/)([^"']*)\2/gi,
+      (_match, attr: string, quote: string, value: string) =>
+        `${attr}=${quote}${proxyBasePath}/${value}${quote}`,
+    )
+    .replace(
+      /\bsrcset\s*=\s*(["'])([^"']*)\1/gi,
+      (_match, quote: string, value: string) =>
+        `srcset=${quote}${rewritePreviewProxySrcset(value, proxyBasePath)}${quote}`,
+    );
+}
+
+function rewritePreviewProxySrcset(value: string, proxyBasePath: string): string {
+  return value
+    .split(',')
+    .map((entry) => {
+      const trimmed = entry.trim();
+      if (!trimmed.startsWith('/') || trimmed.startsWith('//') || trimmed.startsWith('/api/projects/')) {
+        return entry;
+      }
+      return entry.replace(trimmed, `${proxyBasePath}${trimmed}`);
+    })
+    .join(',');
+}
+
+function rewritePreviewProxyCssPaths(text: string, proxyBasePath: string): string {
+  return text.replace(
+    /url\(\s*(["']?)\/(?!\/|api\/projects\/)([^"')]+)\1\s*\)/gi,
+    (_match, quote: string, value: string) => `url(${quote}${proxyBasePath}/${value}${quote})`,
+  );
+}
+
+function rewritePreviewProxyScriptPaths(text: string, proxyBasePath: string): string {
+  return text.replace(
+    /(["'`])\/(?!\/|api\/projects\/)(@vite|_next|src|node_modules|assets|static|public|fonts|images|img|favicon|manifest)(?=[/."':?`])/g,
+    (_match, quote: string, prefix: string) => `${quote}${proxyBasePath}/${prefix}`,
+  );
 }
 
 export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDeps) {
@@ -1396,6 +1576,28 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       res.json(preview);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
+    }
+  });
+
+  app.all(/^\/api\/projects\/([^/]+)\/ui-preview\/proxy\/([^/]+)(?:\/(.*))?$/u, async (req, res) => {
+    try {
+      const params = req.params as unknown as { 0?: string; 1?: string; 2?: string };
+      const projectId = String(params[0] ?? '');
+      const proxyToken = String(params[1] ?? '');
+      const suffix = String(params[2] ?? '');
+      const project = getProject(db, projectId);
+      if (!project) {
+        sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+        return;
+      }
+      const target = projectUiPreviewRuntimeProxyTarget(projectId, proxyToken);
+      if (!target) {
+        sendApiError(res, 404, 'PREVIEW_RUNTIME_NOT_FOUND', 'preview runtime not found');
+        return;
+      }
+      await proxyProjectUiPreviewRequest(req, res, target, suffix);
+    } catch (err: any) {
+      sendApiError(res, 502, 'PREVIEW_PROXY_ERROR', String(err));
     }
   });
 

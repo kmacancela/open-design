@@ -32,6 +32,7 @@ const RESOLVE_EXTENSIONS = [
 ];
 
 const FRAME_WRAPPER_FILE_RE = /(^|\/)(frames?\/|device-frames?\/)|(^|\/)(browser-chrome|device-frame)\.html?$/i;
+const GENERATED_EDITABLE_SNAPSHOT_RE = /^design-snapshots\//u;
 const IMPORT_SPEC_RE =
   /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s*)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 const CSS_IMPORT_RE = /@import\s+(?:url\()?['"]?([^'")]+)['"]?\)?/g;
@@ -555,6 +556,7 @@ function findHtmlScreenFiles(files: ProjectFile[]): string[] {
   return files
     .map((file) => normalizeProjectPath(file.name))
     .filter(isHtmlFile)
+    .filter((file) => !GENERATED_EDITABLE_SNAPSHOT_RE.test(file))
     .filter((file) => !FRAME_WRAPPER_FILE_RE.test(file))
     .sort(compareProjectPaths);
 }
@@ -564,7 +566,7 @@ function findFallbackSourceEntry(files: ProjectFile[]): string | null {
   return names.find((file) => /^src\/App\.[tj]sx$/u.test(file))
     ?? names.find((file) => /^src\/main\.[tj]sx$/u.test(file))
     ?? names.find((file) => /^src\/index\.[tj]sx$/u.test(file))
-    ?? names.find(isHtmlFile)
+    ?? names.find((file) => isHtmlFile(file) && !GENERATED_EDITABLE_SNAPSHOT_RE.test(file))
     ?? null;
 }
 

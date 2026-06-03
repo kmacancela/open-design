@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { open, readFile, mkdir, access } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import type {
 
 const PREVIEW_HOST = '127.0.0.1';
 const PREVIEW_READY_TIMEOUT_MS = 35_000;
+const PREVIEW_READY_CONNECT_TIMEOUT_MS = 1_500;
 
 type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun';
 
@@ -25,10 +26,13 @@ interface PackageJson {
 
 interface PreviewRuntimeEntry {
   key: string;
+  projectId: string;
   runtimeRoot: string;
   cwd: string;
   port: number;
   baseUrl: string;
+  proxyBasePath: string;
+  proxyToken: string;
   logPath: string;
   child: ChildProcess;
   status: 'starting' | 'ready' | 'failed';
@@ -85,13 +89,18 @@ export async function startProjectUiPreviewRuntime(input: {
   } else if (existing) {
     previewRuntimes.delete(key);
   }
+  const proxyToken = runtimeProxyToken();
+  const proxyBasePath = `/api/projects/${encodeURIComponent(input.projectId)}/ui-preview/proxy/${proxyToken}`;
 
   const startPromise = launchRuntime({
     key,
+    projectId: input.projectId,
     projectRoot: input.projectRoot,
     stateRoot: input.stateRoot,
     cwd: runnable.cwd,
     runtimeRoot: runnable.runtimeRoot,
+    proxyBasePath,
+    proxyToken,
     packageJson: runnable.packageJson,
     route: previewRoute,
     framework: input.surface.framework,
@@ -107,17 +116,19 @@ export async function stopAllProjectUiPreviewRuntimes(): Promise<void> {
 
 async function launchRuntime(input: {
   key: string;
+  projectId: string;
   projectRoot: string;
   stateRoot: string;
   cwd: string;
   runtimeRoot: string;
+  proxyBasePath: string;
+  proxyToken: string;
   packageJson: PackageJson;
   route: string;
   framework: string | null;
 }): Promise<ProjectUiPreviewRuntimeResponse> {
   const port = await allocatePort();
   const baseUrl = `http://${PREVIEW_HOST}:${port}`;
-  const routeUrl = joinPreviewUrl(baseUrl, input.route);
   const logPath = await previewLogPath(input.stateRoot, input.runtimeRoot);
   const packageManager = await detectPackageManager(input.projectRoot, input.cwd, input.packageJson);
   const extraArgs = previewScriptArgs(input.framework, port);
@@ -154,17 +165,20 @@ async function launchRuntime(input: {
 
   const entry: PreviewRuntimeEntry = {
     key: input.key,
+    projectId: input.projectId,
     runtimeRoot: input.runtimeRoot,
     cwd: input.cwd,
     port,
     baseUrl,
+    proxyBasePath: input.proxyBasePath,
+    proxyToken: input.proxyToken,
     logPath,
     child,
     status: 'starting',
     error: null,
     startPromise: null,
   };
-  const startPromise = waitForRuntime(entry, routeUrl, input.route);
+  const startPromise = waitForRuntime(entry, input.route);
   entry.startPromise = startPromise;
   previewRuntimes.set(input.key, entry);
   child.once('exit', (code, signal) => {
@@ -181,11 +195,10 @@ async function launchRuntime(input: {
 
 async function waitForRuntime(
   entry: PreviewRuntimeEntry,
-  routeUrl: string,
   route: string,
 ): Promise<ProjectUiPreviewRuntimeResponse> {
   try {
-    await waitForAnyHttpResponse(routeUrl, entry);
+    await waitForPreviewPort(entry);
     entry.status = 'ready';
     entry.error = null;
     entry.startPromise = null;
@@ -210,8 +223,9 @@ function readyResponse(entry: PreviewRuntimeEntry, route: string): ProjectUiPrev
   return {
     status: 'ready',
     runtimeRoot: entry.runtimeRoot,
-    baseUrl: entry.baseUrl,
-    url: joinPreviewUrl(entry.baseUrl, route),
+    baseUrl: entry.proxyBasePath,
+    url: joinPreviewUrl(entry.proxyBasePath, route),
+    upstreamBaseUrl: entry.baseUrl,
     route,
   };
 }
@@ -306,7 +320,7 @@ function dependencyNames(packageJson: PackageJson): string[] {
   ];
 }
 
-async function waitForAnyHttpResponse(url: string, entry: PreviewRuntimeEntry): Promise<void> {
+async function waitForPreviewPort(entry: PreviewRuntimeEntry): Promise<void> {
   const startedAt = Date.now();
   let lastError: string | null = null;
   while (Date.now() - startedAt < PREVIEW_READY_TIMEOUT_MS) {
@@ -314,15 +328,32 @@ async function waitForAnyHttpResponse(url: string, entry: PreviewRuntimeEntry): 
       throw new Error(entry.error ?? 'preview process exited before it became reachable');
     }
     try {
-      const response = await fetch(url);
-      if (response.body) await response.body.cancel().catch(() => undefined);
+      await connectToPreviewPort(entry.port);
       return;
     } catch (error) {
       lastError = errorMessage(error);
     }
     await sleep(200);
   }
-  throw new Error(`timed out waiting for ${url}${lastError ? ` (${lastError})` : ''}`);
+  throw new Error(`timed out waiting for ${entry.baseUrl}${lastError ? ` (${lastError})` : ''}`);
+}
+
+async function connectToPreviewPort(port: number): Promise<void> {
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: PREVIEW_HOST, port });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    socket.setTimeout(PREVIEW_READY_CONNECT_TIMEOUT_MS);
+    socket.once('connect', () => finish());
+    socket.once('timeout', () => finish(new Error('connection timed out')));
+    socket.once('error', (error) => finish(error));
+  });
 }
 
 async function allocatePort(): Promise<number> {
@@ -415,6 +446,26 @@ function installExitHandlers(): void {
 
 function runtimeKey(projectId: string, projectRoot: string, runtimeRoot: string): string {
   return `${projectId}:${projectRoot}:${runtimeRoot}`;
+}
+
+function runtimeProxyToken(): string {
+  return randomBytes(16).toString('hex');
+}
+
+export function projectUiPreviewRuntimeProxyTarget(
+  projectId: string,
+  proxyToken: string,
+): { baseUrl: string; proxyBasePath: string } | null {
+  for (const entry of previewRuntimes.values()) {
+    if (entry.projectId !== projectId) continue;
+    if (entry.proxyToken !== proxyToken) continue;
+    if (!isRuntimeAlive(entry)) return null;
+    return {
+      baseUrl: entry.baseUrl,
+      proxyBasePath: entry.proxyBasePath,
+    };
+  }
+  return null;
 }
 
 function joinPreviewUrl(baseUrl: string, route: string | null): string {

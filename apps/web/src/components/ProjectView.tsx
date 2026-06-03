@@ -142,7 +142,7 @@ import { AppChromeHeader } from './AppChromeHeader';
 import { AvatarMenu } from './AvatarMenu';
 import { HandoffButton } from './HandoffButton';
 import { ProjectDesignSystemPicker } from './ProjectDesignSystemPicker';
-import { ChatPane, type ImportedSurfaceWorkspacePreview } from './ChatPane';
+import { ChatPane, type ImportedSurfaceEditableSnapshotRequest } from './ChatPane';
 import type { ChatSendMeta } from './ChatComposer';
 import {
   CritiqueTheaterMount,
@@ -152,7 +152,7 @@ import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
-import { FileWorkspace, type WorkspaceSurfacePreviewOpenRequest } from './FileWorkspace';
+import { FileWorkspace } from './FileWorkspace';
 import { Icon } from './Icon';
 import {
   type PluginFolderAgentAction,
@@ -667,8 +667,6 @@ export function ProjectView({
   // include a nonce so re-clicking the same name after the user closed the
   // tab still focuses it.
   const [openRequest, setOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
-  const [surfacePreviewOpenRequest, setSurfacePreviewOpenRequest] =
-    useState<WorkspaceSurfacePreviewOpenRequest | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
   const streamingConversationIdRef = useRef<string | null>(null);
@@ -758,6 +756,8 @@ export function ProjectView({
         }))
     : [];
   const newConversationDisabled = creatingConversation;
+  const importedFolderChatFallback = project.metadata?.importedFrom === 'folder';
+  const canRenderChatPane = Boolean(activeConversationId || conversationLoadError || importedFolderChatFallback);
   const activeCompletionNotificationRunsRef = useRef<Set<string>>(new Set());
   const completedNotificationRunsRef = useRef<Set<string>>(new Set());
 
@@ -1135,16 +1135,19 @@ export function ProjectView({
     setOpenRequest({ name, nonce: Date.now() });
   }, []);
 
-  const requestOpenSurfacePreview = useCallback((preview: ImportedSurfaceWorkspacePreview) => {
-    if (!preview.url) return;
-    setSurfacePreviewOpenRequest({
-      tabId: `surface-preview:${preview.id}`,
-      title: preview.title,
-      url: preview.url,
-      sourceFile: preview.sourceFile ?? null,
-      nonce: Date.now(),
-    });
-  }, []);
+  const requestOpenEditableSurface = useCallback(async (request: ImportedSurfaceEditableSnapshotRequest) => {
+    if (!request.fileName) return;
+    if (request.html != null) {
+      const file = await writeProjectTextFile(project.id, request.fileName, request.html);
+      if (!file) {
+        setError(`Couldn't save editable design snapshot "${request.fileName}".`);
+        return;
+      }
+      setFilesRefresh((n) => n + 1);
+      await refreshProjectFiles();
+    }
+    requestOpenFile(request.fileName);
+  }, [project.id, refreshProjectFiles, requestOpenFile]);
 
   const persistArtifact = useCallback(
     async (art: Artifact, projectFilesSnapshot?: ProjectFile[]) => {
@@ -4481,14 +4484,14 @@ export function ProjectView({
               className="comment-left-host"
               aria-label="Comments"
             />
-          ) : activeConversationId || conversationLoadError ? (
+          ) : canRenderChatPane ? (
             <ChatPane
               // The conversation id is part of the key so switching conversations
               // resets internal scroll/draft state inside ChatPane and ChatComposer.
               key={`${project.id}:${activeConversationId ?? 'conversation-unavailable'}:${chatSeed?.id ?? 'ready'}`}
               messages={messages}
               streaming={currentConversationStreaming}
-              sendDisabled={currentConversationSendDisabled}
+              sendDisabled={currentConversationSendDisabled || !activeConversationId}
               queuedItems={currentConversationQueuedItems}
               error={conversationLoadError ?? error ?? audioVoiceOptionsError}
               projectId={project.id}
@@ -4512,7 +4515,7 @@ export function ProjectView({
               onUpdateQueuedSend={updateQueuedChatSend}
               onSendQueuedNow={sendQueuedChatSendNow}
               onRequestOpenFile={requestOpenFile}
-              onOpenSurfacePreview={requestOpenSurfacePreview}
+              onOpenEditableSurface={requestOpenEditableSurface}
               onRequestPluginFolderAgentAction={handlePluginFolderAgentAction}
               activePluginActionPaths={activePluginActionPaths}
               hiddenPluginActionPaths={hiddenAssistantPluginActionPaths}
@@ -4608,7 +4611,6 @@ export function ProjectView({
           commentQueueOnSend={commentQueueOnSend}
           commentSendDisabled={currentConversationQueueDisabled}
           openRequest={openRequest}
-          surfacePreviewOpenRequest={surfacePreviewOpenRequest}
           liveArtifactEvents={liveArtifactEvents}
           designSystemActivityEvents={designSystemActivityEvents}
           tabsState={openTabsState}

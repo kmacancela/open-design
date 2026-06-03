@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { forwardRef, useImperativeHandle, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -31,6 +31,7 @@ vi.mock('../../src/components/ChatComposer', () => ({
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -97,7 +98,7 @@ describe('ChatPane imported folder surfaces', () => {
 
   it('replaces empty starter prompts with discovered UI surfaces', async () => {
     const onRequestOpenFile = vi.fn();
-    const onOpenSurfacePreview = vi.fn();
+    const onOpenEditableSurface = vi.fn();
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -149,7 +150,7 @@ describe('ChatPane imported folder surfaces', () => {
         file('bundle.js.map', 'code', 40),
       ],
       onRequestOpenFile,
-      onOpenSurfacePreview,
+      onOpenEditableSurface,
     });
 
     expect(screen.queryByText('chat.startTitle')).toBeNull();
@@ -168,40 +169,12 @@ describe('ChatPane imported folder surfaces', () => {
       '/api/projects/project-1/raw/site/index.html?v=20',
     );
 
+    expect(within(firstCard).queryByRole('button', { name: 'Open' })).toBeNull();
     fireEvent.click(screen.getByTestId('chat-ui-surface-edit-0'));
-    await waitFor(() => {
-      expect(composerMocks.restoreDraft).toHaveBeenCalledTimes(1);
-    });
-    expect(composerMocks.restoreDraft).toHaveBeenCalledWith({
-      text: expect.stringContaining('Edit this screen: Home screen.'),
-      attachments: expect.arrayContaining([
-        expect.objectContaining({ path: 'site/index.html' }),
-        expect.objectContaining({ path: 'site/styles.css' }),
-        expect.objectContaining({ path: 'site/app.js' }),
-        expect.objectContaining({ path: 'assets/hero-mockup.jpg', kind: 'image' }),
-        expect.objectContaining({ path: 'fonts/Inter.woff2' }),
-      ]),
-    });
-    expect(within(firstCard).getByRole('button', { name: 'Cancel edit' })).toBeTruthy();
-
-    fireEvent.click(within(firstCard).getByRole('button', { name: 'Cancel edit' }));
-    expect(composerMocks.restoreDraft).toHaveBeenCalledTimes(2);
-    expect(composerMocks.restoreDraft).toHaveBeenLastCalledWith({
-      text: '',
-      attachments: [],
-      commentAttachments: [],
-    });
-    expect(within(firstCard).getByRole('button', { name: 'Edit this screen' })).toBeTruthy();
-
-    fireEvent.click(within(firstCard).getByRole('button', { name: 'Open' }));
-    expect(onRequestOpenFile).not.toHaveBeenCalled();
-    expect(onOpenSurfacePreview).toHaveBeenCalledTimes(1);
-    expect(onOpenSurfacePreview).toHaveBeenCalledWith({
-      id: 'home',
-      title: 'Home screen',
-      url: '/api/projects/project-1/raw/site/index.html?v=20',
-      sourceFile: 'site/index.html',
-    });
+    expect(onRequestOpenFile).toHaveBeenCalledTimes(1);
+    expect(onRequestOpenFile).toHaveBeenCalledWith('site/index.html');
+    expect(onOpenEditableSurface).not.toHaveBeenCalled();
+    expect(composerMocks.restoreDraft).not.toHaveBeenCalled();
   });
 
   it('starts a managed runtime preview for source-mapped screens', async () => {
@@ -210,7 +183,7 @@ describe('ChatPane imported folder surfaces', () => {
       importedFrom: 'folder',
       entryFile: 'app/page.tsx',
     };
-    const onOpenSurfacePreview = vi.fn();
+    const onOpenEditableSurface = vi.fn();
     const fetchMock = vi.fn(async (url, init) => {
       if (typeof url === 'string' && url.includes('/ui-surfaces')) {
         return json({
@@ -247,10 +220,14 @@ describe('ChatPane imported folder surfaces', () => {
         return json({
           status: 'ready',
           runtimeRoot: '',
-          baseUrl: 'http://127.0.0.1:43210',
-          url: 'http://127.0.0.1:43210/messages/preview',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
           route: '/messages/preview',
         });
+      }
+      if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
+        return html('<!doctype html><html data-od-editable-snapshot="true"><body><main>Existing edit</main></body></html>');
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -262,27 +239,218 @@ describe('ChatPane imported folder surfaces', () => {
         file('app/messages/[conversationId]/page.tsx', 'code', 20),
         file('app/layout.tsx', 'code', 19),
         file('app/globals.css', 'code', 18),
+        file('design-snapshots/messages.html', 'html', 30),
       ],
       onRequestOpenFile: vi.fn(),
-      onOpenSurfacePreview,
+      onOpenEditableSurface,
     });
 
     const surface = await screen.findByTestId('chat-ui-surface-0');
     await waitFor(() => {
       expect(surface.querySelector('iframe')?.getAttribute('src')).toBe(
-        'http://127.0.0.1:43210/messages/preview',
+        '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
       );
     });
     expect(within(surface).getByText('Live preview')).toBeTruthy();
     expect(screen.queryByText('No live preview')).toBeNull();
 
-    fireEvent.click(within(surface).getByRole('button', { name: 'Open' }));
-    expect(onOpenSurfacePreview).toHaveBeenCalledWith({
-      id: 'messages',
-      title: 'Messages screen',
-      url: 'http://127.0.0.1:43210/messages/preview',
-      sourceFile: 'app/messages/[conversationId]/page.tsx',
+    expect(within(surface).queryByRole('button', { name: 'Open' })).toBeNull();
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledWith({
+        fileName: 'design-snapshots/messages.html',
+      });
     });
+  });
+
+  it('regenerates an existing editable snapshot when it contains a proxy error', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    const onOpenEditableSurface = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
+        return html(`<!doctype html>
+          <html data-od-editable-snapshot="true">
+            <body><pre>Parse Error: Content-Length can't be present with Transfer-Encoding</pre></body>
+          </html>
+        `);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+        file('design-snapshots/messages.html', 'html', 30),
+      ],
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface,
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    const iframe = await waitFor(() => {
+      const node = surface.querySelector('iframe');
+      expect(node?.getAttribute('src')).toBe(
+        '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+      );
+      return node!;
+    });
+    iframe.contentDocument!.open();
+    iframe.contentDocument!.write(`<!doctype html>
+      <html>
+      <head><title>Runtime app</title></head>
+      <body><main><h1>Recovered runtime headline</h1></main></body>
+      </html>
+    `);
+    iframe.contentDocument!.close();
+
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledWith({
+        fileName: 'design-snapshots/messages.html',
+        html: expect.stringContaining('Recovered runtime headline'),
+      });
+    });
+  });
+
+  it('captures a loaded runtime preview into an editable design snapshot', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    const onOpenEditableSurface = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+      ],
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface,
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    const iframe = await waitFor(() => {
+      const node = surface.querySelector('iframe');
+      expect(node?.getAttribute('src')).toBe(
+        '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+      );
+      return node!;
+    });
+    iframe.contentDocument!.open();
+    iframe.contentDocument!.write(`<!doctype html>
+      <html>
+      <head><title>Runtime app</title><script>window.__runtime = true;</script></head>
+      <body><main><h1 style="color: rgb(210, 75, 42);">Runtime headline</h1></main></body>
+      </html>
+    `);
+    iframe.contentDocument!.close();
+    fireEvent.load(iframe);
+
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledTimes(1);
+    });
+    expect(onOpenEditableSurface).toHaveBeenCalledWith({
+      fileName: 'design-snapshots/messages.html',
+      html: expect.stringContaining('Runtime headline'),
+    });
+    const snapshotRequest = onOpenEditableSurface.mock.calls[0]?.[0];
+    expect(snapshotRequest?.html ?? '').not.toContain('<script');
   });
 
   it('does not leave a runtime preview stuck when project files refresh mid-start', async () => {
@@ -374,15 +542,192 @@ describe('ChatPane imported folder surfaces', () => {
     resolvePreview(json({
       status: 'ready',
       runtimeRoot: '',
-      baseUrl: 'http://127.0.0.1:43210',
-      url: 'http://127.0.0.1:43210/',
+      baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+      url: '/api/projects/project-1/ui-preview/proxy/proxy-token/',
+      upstreamBaseUrl: 'http://127.0.0.1:43210',
       route: '/',
     }));
 
     await waitFor(() => {
-      expect(surface.querySelector('iframe')?.getAttribute('src')).toBe('http://127.0.0.1:43210/');
+      expect(surface.querySelector('iframe')?.getAttribute('src')).toBe('/api/projects/project-1/ui-preview/proxy/proxy-token/');
     });
     expect(within(surface).getByText('Live preview')).toBeTruthy();
+  });
+
+  it('keeps the first screen discovery request alive when project files refresh during loading', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    let resolveSurfaces!: (response: Response) => void;
+    const surfacesPromise = new Promise<Response>((resolve) => {
+      resolveSurfaces = resolve;
+    });
+    const fetchMock = vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return await surfacesPromise;
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function Harness() {
+      const [files, setFiles] = useState([
+        file('app/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+      ]);
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="refresh-files"
+            onClick={() => setFiles((current) => [...current, file('README.md', 'text', 21)])}
+          >
+            refresh
+          </button>
+          <ChatPane
+            projectKindForTracking="prototype"
+            messages={[]}
+            streaming={false}
+            error={null}
+            projectId="project-1"
+            projectFiles={files}
+            onEnsureProject={async () => 'project-1'}
+            onSend={vi.fn()}
+            onStop={vi.fn()}
+            conversations={conversations}
+            activeConversationId="conv-1"
+            onSelectConversation={vi.fn()}
+            onDeleteConversation={vi.fn()}
+            projectMetadata={metadata}
+          />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    expect(await screen.findByTestId('chat-ui-surfaces-loading')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('refresh-files'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveSurfaces(json({
+      surfaces: [
+        {
+          id: 'home',
+          label: 'Home screen',
+          route: '/',
+          kind: 'next-route',
+          confidence: 'high',
+          framework: 'Next.js',
+          entryFile: 'app/page.tsx',
+          previewFile: null,
+          previewRuntimeRoot: '',
+          previewPath: '/',
+          previewStatus: 'source-mapped',
+          sourceFiles: ['app/page.tsx'],
+          styleFiles: ['app/globals.css'],
+          scriptFiles: [],
+          assetFiles: [],
+          fontFiles: [],
+          externalDependencies: [
+            { packageName: 'next', importPath: 'next', kind: 'runtime' },
+          ],
+          reasons: ['Next.js route file detected'],
+          mtime: 20,
+        },
+      ],
+      generatedAt: '2026-06-02T00:00:00.000Z',
+    }));
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    expect(within(surface).getByText('Home screen')).toBeTruthy();
+  });
+
+  it('marks a runtime preview failed when the preview start request times out', async () => {
+    vi.useFakeTimers();
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'home',
+              label: 'Home screen',
+              route: '/',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          if (signal?.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+      ],
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const surface = screen.getByTestId('chat-ui-surface-0');
+    expect(surface.getAttribute('data-preview-status')).toBe('starting');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+
+    expect(surface.getAttribute('data-preview-status')).toBe('failed');
+    expect(within(surface).getAllByText('Preview failed').length).toBeGreaterThan(0);
   });
 
   it('does not fall back to scattered asset cards when no UI surfaces are found', async () => {
@@ -425,5 +770,12 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: { 'content-type': 'application/json' },
+  });
+}
+
+function html(value: string, status = 200): Response {
+  return new Response(value, {
+    status,
+    headers: { 'content-type': 'text/html' },
   });
 }

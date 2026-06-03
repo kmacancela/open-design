@@ -1331,6 +1331,10 @@
   font-size: 12px;
   font-weight: 650;
 }
+.app .chat-ui-surface-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .app .chat-ui-surface-primary {
   border: 1px solid var(--accent);
   background: var(--accent);

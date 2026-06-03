@@ -123,6 +123,7 @@ export interface ProjectUiPreviewRuntimeResponse {
   runtimeRoot: string | null;
   baseUrl: string | null;
   url: string | null;
+  upstreamBaseUrl?: string | null;
   route: string | null;
   error?: string | null;
   logTail?: string[];

@@ -1264,12 +1264,14 @@ export async function fetchProjectUiSurfaces(projectId: string): Promise<Project
 export async function startProjectUiPreview(
   projectId: string,
   input: { surfaceId?: string | null; entryFile?: string | null },
+  options?: { signal?: AbortSignal },
 ): Promise<ProjectUiPreviewRuntimeResponse | null> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/ui-preview`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
+      signal: options?.signal,
     });
     if (!resp.ok) return null;
     return (await resp.json()) as ProjectUiPreviewRuntimeResponse;

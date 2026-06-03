@@ -377,7 +377,8 @@ if (process.argv.includes('--')) {
 const port = Number(process.env.PORT || 0);
 const server = http.createServer((req, res) => {
   res.setHeader('content-type', 'text/html');
-  res.end('<!doctype html><h1>Preview ' + req.url + '</h1>');
+  res.write('<!doctype html>');
+  res.end('<h1>Preview ' + req.url + '</h1>');
 });
 server.listen(port, '127.0.0.1');
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
@@ -426,15 +427,89 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
       runtimeRoot: string | null;
       baseUrl: string | null;
       url: string | null;
+      upstreamBaseUrl?: string | null;
       route: string | null;
     };
     expect(previewBody.status).toBe('ready');
     expect(previewBody.runtimeRoot).toBe('');
     expect(previewBody.route).toBe('/messages/preview');
-    expect(previewBody.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/messages\/preview$/u);
+    expect(previewBody.baseUrl).toMatch(
+      new RegExp(`^/api/projects/${project.id}/ui-preview/proxy/[a-f0-9]{32}$`, 'u'),
+    );
+    expect(previewBody.url).toBe(`${previewBody.baseUrl}/messages/preview`);
+    expect(previewBody.upstreamBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
 
-    const rendered = await fetch(previewBody.url!);
+    const rendered = await fetch(`${baseUrl}${previewBody.url!}`);
+    expect(rendered.status).toBe(200);
     expect(await rendered.text()).toContain('Preview /messages/preview');
+  });
+
+  it('does not wait for a source-backed route render before returning the preview runtime', async () => {
+    const folder = makeFolder();
+    await mkdir(path.join(folder, 'app/messages/[conversationId]'), { recursive: true });
+    await mkdir(path.join(folder, 'node_modules'), { recursive: true });
+    await writeFile(
+      path.join(folder, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@10.33.2',
+        scripts: { dev: 'node server.mjs' },
+        dependencies: {
+          next: '16.0.0',
+          react: '18.0.0',
+        },
+      }),
+    );
+    await writeFile(
+      path.join(folder, 'server.mjs'),
+      `
+import http from 'node:http';
+const port = Number(process.env.PORT || 0);
+const server = http.createServer((req, res) => {
+  if (req.url === '/messages/preview') return;
+  res.setHeader('content-type', 'text/html');
+  res.end('<!doctype html><h1>Runtime reachable</h1>');
+});
+server.listen(port, '127.0.0.1');
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+`,
+    );
+    await writeFile(path.join(folder, 'app/layout.tsx'), 'export default function Layout({children}){return children}');
+    await writeFile(
+      path.join(folder, 'app/messages/[conversationId]/page.tsx'),
+      'export default function Page(){return <main>Messages</main>}',
+    );
+
+    const importResp = await importFolder({ baseDir: folder });
+    expect(importResp.status).toBe(200);
+    const { project } = (await importResp.json()) as { project: { id: string } };
+
+    const surfacesResp = await fetch(`${baseUrl}/api/projects/${project.id}/ui-surfaces`);
+    const surfacesBody = (await surfacesResp.json()) as {
+      surfaces: Array<{ entryFile: string; previewPath: string | null }>;
+    };
+    const surface = surfacesBody.surfaces.find((item) =>
+      item.entryFile === 'app/messages/[conversationId]/page.tsx',
+    );
+    expect(surface?.previewPath).toBe('/messages/preview');
+
+    const previewResp = await fetch(`${baseUrl}/api/projects/${project.id}/ui-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entryFile: surface?.entryFile }),
+    });
+    expect(previewResp.status).toBe(200);
+    const previewBody = (await previewResp.json()) as {
+      status: string;
+      route: string | null;
+      baseUrl: string | null;
+      url: string | null;
+    };
+    expect(previewBody.status).toBe('ready');
+    expect(previewBody.route).toBe('/messages/preview');
+    expect(previewBody.baseUrl).toMatch(
+      new RegExp(`^/api/projects/${project.id}/ui-preview/proxy/[a-f0-9]{32}$`, 'u'),
+    );
+    expect(previewBody.url).toBe(`${previewBody.baseUrl}/messages/preview`);
   });
 
   it('returns null entryFile when the folder has no html file', async () => {
