@@ -234,6 +234,7 @@ const SURFACE_PREVIEW_VIEWPORT = {
   width: 1280,
   height: 720,
 } as const;
+const SURFACE_PREVIEW_READY_DELAY_MS = 120;
 const SURFACE_PREVIEW_START_TIMEOUT_MS = 45_000;
 
 function ImportedProjectSurfaces({
@@ -420,7 +421,23 @@ function SurfaceLivePreviewFrame({
   onFrame?: (frame: HTMLIFrameElement | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const readyTimerRef = useRef<number | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [isReady, setIsReady] = useState(false);
+
+  useEffect(() => {
+    setIsReady(false);
+    if (readyTimerRef.current !== null) {
+      window.clearTimeout(readyTimerRef.current);
+      readyTimerRef.current = null;
+    }
+    return () => {
+      if (readyTimerRef.current !== null) {
+        window.clearTimeout(readyTimerRef.current);
+        readyTimerRef.current = null;
+      }
+    };
+  }, [src]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -443,12 +460,27 @@ function SurfaceLivePreviewFrame({
     ? containerWidth / SURFACE_PREVIEW_VIEWPORT.width
     : 1;
 
+  const handleLoad = () => {
+    if (readyTimerRef.current !== null) {
+      window.clearTimeout(readyTimerRef.current);
+    }
+    readyTimerRef.current = window.setTimeout(() => {
+      readyTimerRef.current = null;
+      setIsReady(true);
+    }, SURFACE_PREVIEW_READY_DELAY_MS);
+  };
+
   return (
-    <div className="chat-ui-surface-live-frame" ref={containerRef}>
+    <div
+      className="chat-ui-surface-live-frame"
+      data-ready={isReady ? 'true' : 'false'}
+      ref={containerRef}
+    >
       <iframe
         title={title}
         src={src}
         ref={onFrame}
+        onLoad={handleLoad}
         sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
         style={{
           width: `${SURFACE_PREVIEW_VIEWPORT.width}px`,
@@ -456,6 +488,15 @@ function SurfaceLivePreviewFrame({
           transform: `scale(${scale})`,
         }}
       />
+      <div className="chat-ui-surface-live-overlay" aria-hidden>
+        <span className="chat-ui-surface-preview-fallback">
+          <span className="chat-ui-surface-scan-icon">
+            <Icon name="file-code" size={28} />
+          </span>
+          <span>Starting preview</span>
+          <small>Preparing the screen</small>
+        </span>
+      </div>
     </div>
   );
 }
@@ -463,12 +504,14 @@ function SurfaceLivePreviewFrame({
 function ImportedProjectSurfacesLoading() {
   return (
     <div className="chat-ui-surfaces chat-ui-surfaces-loading" data-testid="chat-ui-surfaces-loading">
-      <section className="chat-ui-surface chat-ui-surface-skeleton" aria-label="Finding UI screens">
+      <section className="chat-ui-surface chat-ui-surface-skeleton" aria-label="Scanning imported project files">
         <div className="chat-ui-surface-preview" aria-hidden>
           <span className="chat-ui-surface-preview-fallback">
-            <Icon name="file-code" size={28} />
-            <span>Finding screens</span>
-            <small>Mapping routes and frontend source files</small>
+            <span className="chat-ui-surface-scan-icon">
+              <Icon name="file-code" size={28} />
+            </span>
+            <span>Scanning files</span>
+            <small>Looking for browser-renderable screens and editable preview candidates</small>
           </span>
         </div>
         <div className="chat-ui-surface-body">
@@ -481,12 +524,25 @@ function ImportedProjectSurfacesLoading() {
   );
 }
 
-function ImportedProjectSurfacesEmpty() {
+function looksLikeNativeMobileProject(files: ProjectFile[]): boolean {
+  return files.some((file) =>
+    /^(android|ios)\//u.test(file.name) ||
+    /(^|\/)(Podfile|Podfile\.lock|build\.gradle|settings\.gradle|pubspec\.ya?ml)$/u.test(file.name) ||
+    /(^|\/)(Info\.plist|AndroidManifest\.xml)$/u.test(file.name),
+  );
+}
+
+function ImportedProjectSurfacesEmpty({ files }: { files: ProjectFile[] }) {
+  const nativeMobile = looksLikeNativeMobileProject(files);
   return (
     <div className="chat-ui-surfaces-empty" data-testid="chat-ui-surfaces-empty">
       <Icon name="file-code" size={30} />
-      <strong>No UI screens found</strong>
-      <span>Design Files still has the full project tree, but OD did not find a renderable screen or route to edit.</span>
+      <strong>No editable web preview found</strong>
+      <span>
+        {nativeMobile
+          ? 'This import looks like a native/mobile project. Design Files still has the full project tree.'
+          : 'Design Files still has the full project tree, but no web screen was found to preview.'}
+      </span>
     </div>
   );
 }
@@ -498,9 +554,16 @@ function SurfacePreviewFallback({
   surface: ProjectUiSurface;
   previewState?: ProjectUiPreviewRuntimeResponse;
 }) {
+  const isStarting = previewState?.status === 'starting';
   return (
     <span className="chat-ui-surface-preview-fallback">
-      <Icon name={surface.kind === 'static-html' ? 'file-code' : 'file'} size={28} />
+      {isStarting ? (
+        <span className="chat-ui-surface-scan-icon">
+          <Icon name="file-code" size={28} />
+        </span>
+      ) : (
+        <Icon name={surface.kind === 'static-html' ? 'file-code' : 'file'} size={28} />
+      )}
       <span>{surfacePreviewShortLabel(surface.previewStatus, previewState?.status)}</span>
       <small>{surfacePreviewDetail(surface, previewState)}</small>
     </span>
@@ -644,7 +707,7 @@ function surfacePreviewDetail(
   surface: ProjectUiSurface,
   previewState?: ProjectUiPreviewRuntimeResponse,
 ): string {
-  if (previewState?.status === 'starting') return 'Starting the imported app runtime';
+  if (previewState?.status === 'starting') return 'Preparing the screen';
   if (previewState?.status === 'failed') return previewState.error ?? 'Could not start the app runtime';
   if (previewState?.status === 'needs-setup') return previewState.error ?? 'Install dependencies before previewing';
   if (previewState?.status === 'unsupported') return previewState.error ?? 'No app runtime was found';
@@ -933,6 +996,7 @@ export function ChatPane({
   // shouldn't be yanked back the moment the next chunk streams in.
   const pinnedToBottomRef = useRef(true);
   const scrolledToFormRef = useRef<Set<string>>(new Set());
+  const importedSurfaceScrollResetKeyRef = useRef<string | null>(null);
   const [tab, setTab] = useState<Tab>('chat');
   const [showConvList, setShowConvList] = useState(false);
   const [scrolledFromBottom, setScrolledFromBottom] = useState(false);
@@ -1082,6 +1146,17 @@ export function ChatPane({
     }
   }, [projectId, importedProjectSurfacesState.status, importedProjectSurfacesState.surfaces]);
   const showImportedFolderSurfaces = projectMetadata?.importedFrom === 'folder';
+  const importedSurfacePaneActive =
+    showImportedFolderSurfaces &&
+    messages.length === 0 &&
+    importedProjectSurfacesState.status !== 'idle';
+  const importedSurfacePaneResetKey = importedSurfacePaneActive
+    ? `${projectId ?? 'pending'}:${importedProjectSurfacesState.status}:${
+        importedProjectSurfacesState.surfaces
+          .map((surface) => surface.id || surface.entryFile)
+          .join('|')
+      }`
+    : null;
   const composerDraftStorageKey = projectId && activeConversationId
     ? `od:chat-composer:draft:${projectId}:${activeConversationId}`
     : undefined;
@@ -1179,6 +1254,7 @@ export function ChatPane({
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
+    if (importedSurfacePaneActive) return;
     // Auto-scroll only when the user was already pinned near the bottom,
     // so a scrollback session reading earlier output isn't yanked to the
     // latest message. We key off the pre-content `pinnedToBottomRef`
@@ -1215,7 +1291,7 @@ export function ChatPane({
       // breaking auto-follow for subsequent chunks.
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, error, streaming]);
+  }, [messages, error, streaming, importedSurfacePaneActive]);
 
   // Saved chat-log scroll state, preserved across tab switches. The
   // chat-log <div> is conditionally rendered so it unmounts when the
@@ -1229,9 +1305,38 @@ export function ChatPane({
     { pinnedToBottom: true } | { pinnedToBottom: false; scrollTop: number } | null
   >(null);
   useEffect(() => {
+    if (!importedSurfacePaneResetKey) {
+      importedSurfaceScrollResetKeyRef.current = null;
+      return;
+    }
+    if (importedSurfaceScrollResetKeyRef.current === importedSurfacePaneResetKey) return;
+    importedSurfaceScrollResetKeyRef.current = importedSurfacePaneResetKey;
+    requestAnimationFrame(() => {
+      const target = logRef.current;
+      if (!target) return;
+      target.scrollTop = 0;
+      savedChatScrollRef.current = { pinnedToBottom: false, scrollTop: 0 };
+      pinnedToBottomRef.current = false;
+      setScrolledFromBottom(false);
+    });
+  }, [importedSurfacePaneResetKey]);
+
+  useEffect(() => {
     if (tab !== 'chat') return;
     const el = logRef.current;
     if (!el) return;
+
+    if (importedSurfacePaneActive) {
+      requestAnimationFrame(() => {
+        const target = logRef.current;
+        if (!target) return;
+        target.scrollTop = 0;
+        savedChatScrollRef.current = { pinnedToBottom: false, scrollTop: 0 };
+        pinnedToBottomRef.current = false;
+        setScrolledFromBottom(false);
+      });
+      return;
+    }
 
     // Restore previously-saved position on remount. Defer to the next
     // frame so the conditional <> contents finish layout before the
@@ -1289,10 +1394,11 @@ export function ChatPane({
       snapshot(el);
       el.removeEventListener('scroll', onScroll);
     };
-  }, [tab]);
+  }, [tab, importedSurfacePaneActive]);
 
   useEffect(() => {
     if (tab !== 'chat') return;
+    if (importedSurfacePaneActive) return;
     const el = logRef.current;
     if (!el) return;
 
@@ -1394,7 +1500,7 @@ export function ChatPane({
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
     };
-  }, [tab]);
+  }, [tab, importedSurfacePaneActive]);
 
   // Close the conversation history dropdown on outside click / Escape.
   useEffect(() => {
@@ -1482,6 +1588,7 @@ export function ChatPane({
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }
+  const showJumpToLatestButton = scrolledFromBottom && !importedSurfacePaneActive;
 
   return (
     <div className="pane">
@@ -1669,7 +1776,7 @@ export function ChatPane({
                   ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loading' ? (
                     <ImportedProjectSurfacesLoading />
                   ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loaded' ? (
-                    <ImportedProjectSurfacesEmpty />
+                    <ImportedProjectSurfacesEmpty files={projectFiles} />
                   ) : (
                     <>
                       <div className="chat-empty">
@@ -1888,11 +1995,11 @@ export function ChatPane({
                 keep it out of the a11y tree when it's not visible. */}
             <button
               type="button"
-              className={`chat-jump-btn${scrolledFromBottom ? ' chat-jump-btn-active' : ''}`}
+              className={`chat-jump-btn${showJumpToLatestButton ? ' chat-jump-btn-active' : ''}`}
               onClick={jumpToBottom}
               title={t('chat.scrollToLatest')}
-              aria-hidden={!scrolledFromBottom}
-              tabIndex={scrolledFromBottom ? 0 : -1}
+              aria-hidden={!showJumpToLatestButton}
+              tabIndex={showJumpToLatestButton ? 0 : -1}
             >
               <Icon name="arrow-up" size={12} style={{ transform: 'rotate(180deg)' }} />
               <span>{t('chat.jumpToLatest')}</span>

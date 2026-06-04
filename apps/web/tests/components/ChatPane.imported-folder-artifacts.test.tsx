@@ -91,7 +91,8 @@ describe('ChatPane imported folder surfaces', () => {
       onRequestOpenFile: vi.fn(),
     });
 
-    expect(await screen.findByTestId('chat-ui-surfaces-loading')).toBeTruthy();
+    const loading = await screen.findByTestId('chat-ui-surfaces-loading');
+    expect(within(loading).getByText('Scanning files')).toBeTruthy();
     expect(screen.queryByTestId('chat-design-artifacts')).toBeNull();
     expect(screen.queryByText('assets/hero-mockup.jpg')).toBeNull();
   });
@@ -278,6 +279,86 @@ describe('ChatPane imported folder surfaces', () => {
       expect(onOpenEditableSurface).toHaveBeenCalledWith({
         fileName: 'design-snapshots/messages.html',
       });
+    });
+  });
+
+  it('keeps a runtime preview covered until the iframe finishes loading', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+      ],
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface: vi.fn(),
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    const iframe = await waitFor(() => {
+      const node = surface.querySelector('iframe');
+      expect(node?.getAttribute('src')).toBe(
+        '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+      );
+      return node!;
+    });
+    const liveFrame = surface.querySelector('.chat-ui-surface-live-frame');
+    expect(liveFrame?.getAttribute('data-ready')).toBe('false');
+    expect(within(surface).getByText('Starting preview')).toBeTruthy();
+
+    fireEvent.load(iframe);
+
+    await waitFor(() => {
+      expect(liveFrame?.getAttribute('data-ready')).toBe('true');
     });
   });
 
@@ -844,6 +925,8 @@ describe('ChatPane imported folder surfaces', () => {
     });
     const surface = screen.getByTestId('chat-ui-surface-0');
     expect(surface.getAttribute('data-preview-status')).toBe('starting');
+    expect(within(surface).getByText('Preparing the screen')).toBeTruthy();
+    expect(surface.querySelector('.chat-ui-surface-scan-icon')).toBeTruthy();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(45_000);
@@ -883,9 +966,39 @@ describe('ChatPane imported folder surfaces', () => {
     });
 
     const empty = await screen.findByTestId('chat-ui-surfaces-empty');
-    expect(within(empty).getByText('No UI screens found')).toBeTruthy();
+    expect(within(empty).getByText('No editable web preview found')).toBeTruthy();
+    expect(within(empty).getByText(/no web screen was found to preview/u)).toBeTruthy();
     expect(screen.queryByTestId('chat-design-artifacts')).toBeNull();
     expect(screen.queryByText('assets/latest-screenshot.jpg')).toBeNull();
+  });
+
+  it('explains native mobile imports when no browser-renderable surfaces are found', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({ surfaces: [], generatedAt: '2026-06-02T00:00:00.000Z' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+    };
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('android/app/build.gradle', 'code', 40),
+        file('ios/Podfile', 'text', 30),
+        file('ios/Pods/GoogleSignIn/Resources/google.png', 'image', 20),
+        file('src/App.tsx', 'code', 10),
+      ],
+      onRequestOpenFile: vi.fn(),
+    });
+
+    const empty = await screen.findByTestId('chat-ui-surfaces-empty');
+    expect(within(empty).getByText('No editable web preview found')).toBeTruthy();
+    expect(within(empty).getByText(/native\/mobile project/u)).toBeTruthy();
+    expect(within(empty).getByText(/full project tree/u)).toBeTruthy();
   });
 });
 
