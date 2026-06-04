@@ -376,9 +376,19 @@ if (process.argv.includes('--')) {
 }
 const port = Number(process.env.PORT || 0);
 const server = http.createServer((req, res) => {
+  if (req.url === '/styles.css') {
+    res.setHeader('content-type', 'text/css');
+    res.end("@font-face{font-family:Inter;src:url('/fonts/Inter.woff2')}body{font-family:Inter}");
+    return;
+  }
+  if (req.url === '/fonts/Inter.woff2') {
+    res.setHeader('content-type', 'font/woff2');
+    res.end('font');
+    return;
+  }
   res.setHeader('content-type', 'text/html');
   res.write('<!doctype html>');
-  res.end('<h1>Preview ' + req.url + '</h1>');
+  res.end('<html><head><link rel="stylesheet" href="/styles.css"><script type="module">import RefreshRuntime from "/@react-refresh"; import "/@vite/client";</script></head><body><a href="/search">Search</a><h1>Preview ' + req.url + '</h1></body></html>');
 });
 server.listen(port, '127.0.0.1');
 process.on('SIGTERM', () => server.close(() => process.exit(0)));
@@ -441,7 +451,18 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
     const rendered = await fetch(`${baseUrl}${previewBody.url!}`);
     expect(rendered.status).toBe(200);
-    expect(await rendered.text()).toContain('Preview /messages/preview');
+    const renderedHtml = await rendered.text();
+    expect(renderedHtml).toContain('Preview /messages/preview');
+    expect(renderedHtml).toContain(`<link rel="stylesheet" href="${previewBody.baseUrl}/styles.css">`);
+    expect(renderedHtml).toContain(`from "${previewBody.baseUrl}/@react-refresh"`);
+    expect(renderedHtml).toContain(`import "${previewBody.baseUrl}/@vite/client"`);
+    expect(renderedHtml).toContain('<a href="/search">Search</a>');
+
+    const font = await fetch(`${baseUrl}${previewBody.baseUrl!}/fonts/Inter.woff2`, {
+      headers: { Origin: 'null' },
+    });
+    expect(font.status).toBe(200);
+    expect(font.headers.get('access-control-allow-origin')).toBe('*');
   });
 
   it('does not wait for a source-backed route render before returning the preview runtime', async () => {

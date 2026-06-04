@@ -34,7 +34,7 @@ import type { SettingsSection } from './SettingsDialog';
 import {
   buildEditableSnapshotHtml,
   editableSnapshotFileName,
-  isRejectedEditableSnapshotHtml,
+  isReusableEditableSnapshotHtml,
 } from '../runtime/editable-snapshot';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -265,7 +265,7 @@ function ImportedProjectSurfaces({
           cacheBustKey: existingSnapshot?.mtime ?? Date.now(),
         })
         : null;
-      if (!isRejectedEditableSnapshotHtml(snapshotText)) {
+      if (isReusableEditableSnapshotHtml(snapshotText)) {
         await onOpenEditableSurface?.({ fileName });
         return;
       }

@@ -227,7 +227,7 @@ describe('ChatPane imported folder surfaces', () => {
         });
       }
       if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
-        return html('<!doctype html><html data-od-editable-snapshot="true"><body><main>Existing edit</main></body></html>');
+        return html('<!doctype html><html data-od-editable-snapshot="true" style="color: rgb(1, 2, 3);"><body style="font-family: Inter;"><main>Existing edit</main></body></html>');
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -358,6 +358,104 @@ describe('ChatPane imported folder surfaces', () => {
         html: expect.stringContaining('Recovered runtime headline'),
       });
     });
+  });
+
+  it('regenerates an existing editable snapshot when generated inline styles are missing', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    const onOpenEditableSurface = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
+        return html(`<!doctype html>
+          <html data-od-editable-snapshot="true">
+            <body><main><h1>Raw stale snapshot</h1></main></body>
+          </html>
+        `);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+        file('design-snapshots/messages.html', 'html', 30),
+      ],
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface,
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    const iframe = await waitFor(() => {
+      const node = surface.querySelector('iframe');
+      expect(node?.getAttribute('src')).toBe(
+        '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+      );
+      return node!;
+    });
+    iframe.contentDocument!.open();
+    iframe.contentDocument!.write(`<!doctype html>
+      <html>
+      <head><title>Runtime app</title></head>
+      <body><main><h1 style="color: rgb(210, 75, 42);">Styled runtime headline</h1></main></body>
+      </html>
+    `);
+    iframe.contentDocument!.close();
+
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledWith({
+        fileName: 'design-snapshots/messages.html',
+        html: expect.stringContaining('Styled runtime headline'),
+      });
+    });
+    expect(onOpenEditableSurface.mock.calls[0]?.[0]?.html ?? '').not.toContain('Raw stale snapshot');
   });
 
   it('captures a loaded runtime preview into an editable design snapshot', async () => {

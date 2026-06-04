@@ -177,6 +177,9 @@ async function proxyProjectUiPreviewRequest(
     if (shouldSkipPreviewProxyHeader(name)) continue;
     res.setHeader(name, value);
   }
+  if (req.headers.origin === 'null') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'HEAD') {
@@ -295,9 +298,14 @@ function injectPreviewProxyBase(html: string, proxyBasePath: string): string {
 function rewritePreviewProxyHtmlPaths(html: string, proxyBasePath: string): string {
   return html
     .replace(
-      /\b(src|href|action|poster)\s*=\s*(["'])\/(?!\/|api\/projects\/)([^"']*)\2/gi,
+      /\b(src|action|poster)\s*=\s*(["'])\/(?!\/|api\/projects\/)([^"']*)\2/gi,
       (_match, attr: string, quote: string, value: string) =>
         `${attr}=${quote}${proxyBasePath}/${value}${quote}`,
+    )
+    .replace(
+      /(<link\b[^>]*\bhref\s*=\s*)(["'])\/(?!\/|api\/projects\/)([^"']*)\2/gi,
+      (_match, prefix: string, quote: string, value: string) =>
+        `${prefix}${quote}${proxyBasePath}/${value}${quote}`,
     )
     .replace(
       /\bsrcset\s*=\s*(["'])([^"']*)\1/gi,
@@ -328,7 +336,7 @@ function rewritePreviewProxyCssPaths(text: string, proxyBasePath: string): strin
 
 function rewritePreviewProxyScriptPaths(text: string, proxyBasePath: string): string {
   return text.replace(
-    /(["'`])\/(?!\/|api\/projects\/)(@vite|_next|src|node_modules|assets|static|public|fonts|images|img|favicon|manifest)(?=[/."':?`])/g,
+    /(["'`])\/(?!\/|api\/projects\/)(@vite|@react-refresh|_next|src|node_modules|assets|static|public|fonts|images|img|favicon|manifest)(?=[/."':?`])/g,
     (_match, quote: string, prefix: string) => `${quote}${proxyBasePath}/${prefix}`,
   );
 }

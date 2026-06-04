@@ -1,6 +1,24 @@
 import type { ProjectUiSurface } from '../types';
 
 const EDITABLE_SNAPSHOT_DIR = 'design-snapshots';
+const ROOT_STYLE_PROPERTIES = [
+  'background',
+  'background-color',
+  'box-sizing',
+  'color',
+  'color-scheme',
+  'display',
+  'font',
+  'font-family',
+  'font-size',
+  'font-weight',
+  'line-height',
+  'margin',
+  'min-height',
+  'padding',
+  'text-rendering',
+  '-webkit-font-smoothing',
+] as const;
 
 export function editableSnapshotFileName(surface: ProjectUiSurface): string {
   const slug = slugifySnapshotName(surface.id)
@@ -18,12 +36,14 @@ export function buildEditableSnapshotHtml(
   if (!document.documentElement || !document.body) return null;
   const bodyText = document.body.textContent?.trim() ?? '';
   if (document.body.children.length === 0 && bodyText.length === 0) return null;
+  if (hasOnlyEmptyAppMount(document.body)) return null;
   if (isRejectedEditableSnapshotDocument(document, bodyText)) return null;
 
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
   inlineComputedStyles(document, clone);
   syncResolvedResourceUrls(document, clone);
   syncFormState(document, clone);
+  normalizeFrozenSnapshotState(document, clone);
   pruneRuntimeOnlyNodes(clone);
   prepareSnapshotHead(document, clone, surface);
 
@@ -36,7 +56,18 @@ export function buildEditableSnapshotHtml(
 export function isRejectedEditableSnapshotHtml(html: string | null): boolean {
   if (!html) return false;
   if (!html.includes('data-od-editable-snapshot="true"')) return false;
-  return rejectedSnapshotText(html);
+  return (
+    rejectedSnapshotText(html) ||
+    !hasGeneratedInlineStyles(html) ||
+    hasCopiedContentSecurityPolicy(html) ||
+    hasEmptyAppMountSnapshot(html)
+  );
+}
+
+export function isReusableEditableSnapshotHtml(html: string | null): boolean {
+  if (!html) return false;
+  if (!html.includes('data-od-editable-snapshot="true"')) return false;
+  return !isRejectedEditableSnapshotHtml(html);
 }
 
 function slugifySnapshotName(value: string | null): string {
@@ -57,42 +88,75 @@ function rejectedSnapshotText(text: string): boolean {
   return /(?:preview proxy error|preview runtime not found|parse error:|content-length can't be present with transfer-encoding)/i.test(text);
 }
 
+function hasGeneratedInlineStyles(html: string): boolean {
+  return /<html\b[^>]*\sstyle\s*=/i.test(html) || /<body\b[^>]*\sstyle\s*=/i.test(html);
+}
+
+function hasCopiedContentSecurityPolicy(html: string): boolean {
+  return /<meta\b[^>]*\bhttp-equiv\s*=\s*["']?\s*content-security-policy(?:-report-only)?\b/i.test(html);
+}
+
+function hasEmptyAppMountSnapshot(html: string): boolean {
+  return /<body\b[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<div\b(?=[^>]*(?:\bid\s*=\s*["']?(?:root|app|__next|app-root|root-app)\b|\bdata-v-app\b))[^>]*>\s*<\/div>\s*(?:<!--[\s\S]*?-->\s*)*<\/body>/i.test(html);
+}
+
+function hasOnlyEmptyAppMount(body: HTMLElement): boolean {
+  const win = body.ownerDocument.defaultView;
+  if (!win) return false;
+  const children = Array.from(body.children).filter((child) => !isRuntimeOnlyElement(child));
+  if (children.length !== 1) return false;
+  const mount = children[0];
+  if (!(mount instanceof win.HTMLElement)) return false;
+  if (mount.textContent?.trim()) return false;
+  if (mount.children.length > 0) return false;
+  return isAppMountElement(mount);
+}
+
+function isRuntimeOnlyElement(element: Element): boolean {
+  return /^(?:SCRIPT|STYLE|LINK|META|BASE|TEMPLATE|NOSCRIPT)$/u.test(element.tagName);
+}
+
+function isAppMountElement(element: HTMLElement): boolean {
+  const id = element.getAttribute('id')?.toLowerCase() ?? '';
+  if (['root', 'app', '__next', 'app-root', 'root-app'].includes(id)) return true;
+  return element.hasAttribute('data-v-app');
+}
+
 function inlineComputedStyles(document: Document, clone: HTMLElement): void {
   const win = document.defaultView;
   if (!win) return;
-  const sourceElements = [
-    document.documentElement,
-    ...Array.from(document.documentElement.querySelectorAll('*')),
-  ];
-  const cloneElements = [
-    clone,
-    ...Array.from(clone.querySelectorAll('*')),
-  ];
-  for (let index = 0; index < sourceElements.length; index += 1) {
-    const source = sourceElements[index];
-    const target = cloneElements[index];
-    if (!(source instanceof win.HTMLElement) || !(target instanceof HTMLElement)) continue;
-    const computed = win.getComputedStyle(source);
-    for (let propertyIndex = 0; propertyIndex < computed.length; propertyIndex += 1) {
-      const property = computed.item(propertyIndex);
-      if (!property) continue;
-      target.style.setProperty(
-        property,
-        computed.getPropertyValue(property),
-        computed.getPropertyPriority(property),
-      );
-    }
+  copySelectedComputedStyles(win, document.documentElement, clone);
+  const sourceBody = document.body;
+  const cloneBody = clone.querySelector('body');
+  if (sourceBody && cloneBody instanceof win.HTMLElement) {
+    copySelectedComputedStyles(win, sourceBody, cloneBody);
+  }
+}
+
+function copySelectedComputedStyles(
+  win: Window & typeof globalThis,
+  source: Element,
+  target: Element,
+): void {
+  if (!(source instanceof win.HTMLElement) || !(target instanceof win.HTMLElement)) return;
+  const computed = win.getComputedStyle(source);
+  for (const property of ROOT_STYLE_PROPERTIES) {
+    const value = computed.getPropertyValue(property);
+    if (!value) continue;
+    target.style.setProperty(property, value, computed.getPropertyPriority(property));
   }
 }
 
 function syncResolvedResourceUrls(document: Document, clone: HTMLElement): void {
   const sourceElements = Array.from(document.documentElement.querySelectorAll('*'));
   const cloneElements = Array.from(clone.querySelectorAll('*'));
+  const win = document.defaultView;
+  if (!win) return;
   for (let index = 0; index < sourceElements.length; index += 1) {
     const source = sourceElements[index];
     const target = cloneElements[index];
     if (!source || !target) continue;
-    if (!(target instanceof HTMLElement)) continue;
+    if (!(target instanceof win.HTMLElement)) continue;
     syncResolvedUrl(source, target, 'src');
     syncResolvedUrl(source, target, 'href');
     syncResolvedUrl(source, target, 'poster');
@@ -114,6 +178,45 @@ function syncResolvedSrcset(source: Element, target: HTMLElement): void {
     target.setAttribute('src', currentSrc);
     target.removeAttribute('srcset');
   }
+}
+
+function normalizeFrozenSnapshotState(document: Document, clone: HTMLElement): void {
+  const win = document.defaultView;
+  if (!win) return;
+  const sourceElements = [
+    document.documentElement,
+    ...Array.from(document.documentElement.querySelectorAll('*')),
+  ];
+  const cloneElements = [
+    clone,
+    ...Array.from(clone.querySelectorAll('*')),
+  ];
+  for (let index = 0; index < sourceElements.length; index += 1) {
+    const source = sourceElements[index];
+    const target = cloneElements[index];
+    if (!(source instanceof win.HTMLElement) || !(target instanceof win.HTMLElement)) continue;
+    if (source.classList.contains('reveal')) {
+      target.classList.add('visible');
+      target.style.setProperty('opacity', '1');
+      target.style.setProperty('transform', 'none');
+      target.style.setProperty('visibility', 'visible');
+    }
+    if (source.classList.contains('reveal-arrow')) {
+      target.classList.add('visible');
+    }
+    if (hasSnapshotIntroAnimation(source)) {
+      target.style.setProperty('opacity', '1');
+      target.style.setProperty('animation', 'none');
+      target.style.setProperty('transform', 'none');
+      target.style.setProperty('visibility', 'visible');
+    }
+  }
+}
+
+function hasSnapshotIntroAnimation(element: Element): boolean {
+  return ['animate-fade-up', 'animate-fade-in', 'animate-slide-left'].some((className) =>
+    element.classList.contains(className),
+  );
 }
 
 function syncFormState(document: Document, clone: HTMLElement): void {
@@ -141,6 +244,12 @@ function pruneRuntimeOnlyNodes(clone: HTMLElement): void {
   clone.querySelectorAll('script, base, link[rel="modulepreload"], link[rel="preload"][as="script"]').forEach((node) => {
     node.remove();
   });
+  clone.querySelectorAll('meta[http-equiv]').forEach((node) => {
+    const httpEquiv = node.getAttribute('http-equiv')?.toLowerCase() ?? '';
+    if (httpEquiv === 'content-security-policy' || httpEquiv === 'content-security-policy-report-only') {
+      node.remove();
+    }
+  });
 }
 
 function prepareSnapshotHead(
@@ -163,6 +272,29 @@ function prepareSnapshotHead(
   const title = head.querySelector('title') ?? clone.ownerDocument.createElement('title');
   title.textContent = `${surface.label || document.title || 'Screen'} editable snapshot`;
   if (!title.parentElement) head.append(title);
+  if (!head.querySelector('style[data-od-snapshot-normalize]')) {
+    const style = clone.ownerDocument.createElement('style');
+    style.setAttribute('data-od-snapshot-normalize', 'true');
+    style.textContent = `
+      [data-od-editable-snapshot] .reveal {
+        opacity: 1 !important;
+        transform: none !important;
+        visibility: visible !important;
+      }
+      [data-od-editable-snapshot] .reveal-arrow.visible {
+        opacity: 0.15 !important;
+      }
+      [data-od-editable-snapshot] .animate-fade-up,
+      [data-od-editable-snapshot] .animate-fade-in,
+      [data-od-editable-snapshot] .animate-slide-left {
+        opacity: 1 !important;
+        animation: none !important;
+        transform: none !important;
+        visibility: visible !important;
+      }
+    `;
+    head.append(style);
+  }
 }
 
 function createHead(clone: HTMLElement): HTMLHeadElement {
