@@ -99,6 +99,7 @@ describe('ChatPane imported folder surfaces', () => {
   it('replaces empty starter prompts with discovered UI surfaces', async () => {
     const onRequestOpenFile = vi.fn();
     const onOpenEditableSurface = vi.fn();
+    const onInspectSurfaceFiles = vi.fn();
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -151,6 +152,7 @@ describe('ChatPane imported folder surfaces', () => {
       ],
       onRequestOpenFile,
       onOpenEditableSurface,
+      onInspectSurfaceFiles,
     });
 
     expect(screen.queryByText('chat.startTitle')).toBeNull();
@@ -160,9 +162,25 @@ describe('ChatPane imported folder surfaces', () => {
     expect(screen.queryByTestId('chat-design-artifacts')).toBeNull();
     expect(within(surfaces).getByText('Home screen')).toBeTruthy();
     expect(within(surfaces).getByText('/')).toBeTruthy();
-    expect(within(surfaces).getByText('5 frontend files')).toBeTruthy();
+    const inspectFilesButton = within(surfaces).getByRole('button', {
+      name: 'Inspect files for Home screen',
+    });
+    expect(inspectFilesButton.textContent).toBe('5 frontend files');
     expect(within(surfaces).getByText('1 packages')).toBeTruthy();
     expect(within(surfaces).getByText('lucide-react')).toBeTruthy();
+    fireEvent.click(inspectFilesButton);
+    expect(onInspectSurfaceFiles).toHaveBeenCalledWith({
+      surfaceId: 'home',
+      label: 'Home screen',
+      fileNames: [
+        'site/index.html',
+        'site/styles.css',
+        'site/app.js',
+        'assets/hero-mockup.jpg',
+        'fonts/Inter.woff2',
+      ],
+      preferredFileName: 'site/index.html',
+    });
 
     const firstCard = screen.getByTestId('chat-ui-surface-0');
     expect(firstCard.querySelector('iframe')?.getAttribute('src')).toBe(

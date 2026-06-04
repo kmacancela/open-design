@@ -68,6 +68,13 @@ export interface ImportedSurfaceEditableSnapshotRequest {
   html?: string | null;
 }
 
+export interface ImportedSurfaceFileScopeRequest {
+  surfaceId: string;
+  label: string;
+  fileNames: string[];
+  preferredFileName?: string | null;
+}
+
 const DEFAULT_STARTER_KEYS: Array<{
   icon: string;
   titleKey: keyof Dict;
@@ -236,6 +243,7 @@ function ImportedProjectSurfaces({
   previewStates,
   onOpenFile,
   onOpenEditableSurface,
+  onInspectSurfaceFiles,
 }: {
   projectId: string | null;
   surfaces: ProjectUiSurface[];
@@ -243,6 +251,7 @@ function ImportedProjectSurfaces({
   previewStates: ImportedSurfacePreviewStates;
   onOpenFile?: (name: string) => void;
   onOpenEditableSurface?: (request: ImportedSurfaceEditableSnapshotRequest) => void | Promise<void>;
+  onInspectSurfaceFiles?: (request: ImportedSurfaceFileScopeRequest) => void;
 }) {
   const fileByName = useMemo(() => new Map(files.map((file) => [file.name, file])), [files]);
   const liveFrameRefs = useRef(new Map<string, HTMLIFrameElement | null>());
@@ -297,6 +306,11 @@ function ImportedProjectSurfaces({
         const previewFile = surface.previewFile ? fileByName.get(surface.previewFile) ?? null : null;
         const localFileCount = surfaceLocalFileCount(surface);
         const dependencyCount = surface.externalDependencies.length;
+        const inspectFileNames = uniqueSurfaceFiles(surface).filter((name) => fileByName.has(name));
+        const preferredInspectFileName =
+          surface.sourceFiles.find((name) => inspectFileNames.includes(name)) ??
+          inspectFileNames[0] ??
+          null;
         const previewState = previewStates[surface.id];
         const runtimePreviewUrl = surfaceRuntimePreviewUrl(surface, previewState);
         const snapshotFileName = editableSnapshotFileName(surface);
@@ -350,7 +364,23 @@ function ImportedProjectSurfaces({
               </div>
               <div className="chat-ui-surface-meta">
                 <span>{surface.framework ?? surfaceKindLabel(surface.kind)}</span>
-                <span>{localFileCount} frontend files</span>
+                {onInspectSurfaceFiles && inspectFileNames.length > 0 ? (
+                  <button
+                    type="button"
+                    className="chat-ui-surface-meta-pill"
+                    aria-label={`Inspect files for ${surface.label}`}
+                    onClick={() => onInspectSurfaceFiles({
+                      surfaceId: surface.id,
+                      label: surface.label,
+                      fileNames: inspectFileNames,
+                      preferredFileName: preferredInspectFileName,
+                    })}
+                  >
+                    {localFileCount} frontend files
+                  </button>
+                ) : (
+                  <span>{localFileCount} frontend files</span>
+                )}
                 {dependencyCount > 0 ? <span>{dependencyCount} packages</span> : null}
               </div>
               <div className="chat-ui-surface-files" title={surfaceFileSummary(surface)}>
@@ -720,6 +750,7 @@ interface Props {
   // produced-file chips all call this.
   onRequestOpenFile?: (name: string) => void;
   onOpenEditableSurface?: (request: ImportedSurfaceEditableSnapshotRequest) => void | Promise<void>;
+  onInspectSurfaceFiles?: (request: ImportedSurfaceFileScopeRequest) => void;
   onRequestPluginFolderAgentAction?: (
     relativePath: string,
     action: PluginFolderAgentAction,
@@ -841,6 +872,7 @@ export function ChatPane({
   onSendQueuedNow,
   onRequestOpenFile,
   onOpenEditableSurface,
+  onInspectSurfaceFiles,
   onRequestPluginFolderAgentAction,
   activePluginActionPaths,
   hiddenPluginActionPaths,
@@ -1632,6 +1664,7 @@ export function ChatPane({
                       previewStates={importedSurfacePreviewStates}
                       onOpenFile={onRequestOpenFile}
                       onOpenEditableSurface={onOpenEditableSurface}
+                      onInspectSurfaceFiles={onInspectSurfaceFiles}
                     />
                   ) : showImportedFolderSurfaces && importedProjectSurfacesState.status === 'loading' ? (
                     <ImportedProjectSurfacesLoading />

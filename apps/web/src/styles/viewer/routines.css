@@ -1305,7 +1305,8 @@
   flex-wrap: wrap;
   gap: 5px;
 }
-.app .chat-ui-surface-meta span {
+.app .chat-ui-surface-meta span,
+.app .chat-ui-surface-meta-pill {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1317,6 +1318,20 @@
   font-size: 10.5px;
   line-height: 1.35;
   background: var(--bg);
+}
+.app .chat-ui-surface-meta-pill {
+  appearance: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+.app .chat-ui-surface-meta-pill:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-subtle);
+}
+.app .chat-ui-surface-meta-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .app .chat-ui-surface-actions {
   display: flex;

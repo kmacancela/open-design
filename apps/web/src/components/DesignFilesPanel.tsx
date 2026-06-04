@@ -48,6 +48,8 @@ interface Props {
   onNewSketch: () => void;
   uploadError?: string | null;
   onClearUploadError?: () => void;
+  fileScope?: DesignFilesScope | null;
+  onClearFileScope?: () => void;
   preferredPreviewFile?: string | null;
   autoPreviewDesignArtifacts?: boolean;
   onPluginFolderAgentAction?: (
@@ -79,6 +81,13 @@ type DesignFilesGroupMode = 'kind' | 'modified';
 type ModifiedSection = 'today' | 'yesterday' | 'previous7Days' | 'previous30Days' | 'older';
 type SortKey = 'name' | 'kind' | 'mtime';
 type SortDir = 'asc' | 'desc';
+
+export interface DesignFilesScope {
+  id: string;
+  label: string;
+  fileNames: string[];
+  preferredFileName?: string | null;
+}
 
 // Storage key for per-project view state. Bump the version suffix (v1 → v2) when
 // removing or renaming a persisted field — just adding an optional field is safe
@@ -223,6 +232,8 @@ export function DesignFilesPanel({
   onNewSketch,
   uploadError = null,
   onClearUploadError,
+  fileScope = null,
+  onClearFileScope,
   preferredPreviewFile = null,
   autoPreviewDesignArtifacts = false,
   onPluginFolderAgentAction,
@@ -287,15 +298,30 @@ export function DesignFilesPanel({
   const uiSurfacesPromiseRef = useRef<Promise<ProjectUiSurface[]> | null>(null);
   const requestedRenderedPreviewRef = useRef<Set<string>>(new Set());
   const [renderedPreviewStates, setRenderedPreviewStates] = useState<Record<string, RenderedPreviewState>>({});
+  const fileScopeKey = fileScope ? `${fileScope.id}:${fileScope.fileNames.join('\u0000')}` : null;
+  const scopedFileNames = useMemo(
+    () => new Set(fileScope?.fileNames ?? []),
+    [fileScope],
+  );
+  const visibleDesignFiles = useMemo(
+    () => (fileScope ? files.filter((file) => scopedFileNames.has(file.name)) : files),
+    [fileScope, files, scopedFileNames],
+  );
 
   // Derive immediate subdirectories and files at the current directory level
   // from the flat files list. Files with names like "a/b/c.html" contribute
   // "a" as a directory when currentDir is '' and "b" when currentDir is "a".
   const { dirsAtCurrentDir, filesAtCurrentDir } = useMemo(() => {
+    if (fileScope) {
+      return {
+        dirsAtCurrentDir: [],
+        filesAtCurrentDir: visibleDesignFiles,
+      };
+    }
     const prefix = currentDir === '' ? '' : `${currentDir}/`;
     const dirs = new Set<string>();
     const localFiles: ProjectFile[] = [];
-    for (const f of files) {
+    for (const f of visibleDesignFiles) {
       if (!f.name.startsWith(prefix)) continue;
       const remainder = f.name.slice(prefix.length);
       const slashIdx = remainder.indexOf('/');
@@ -309,7 +335,7 @@ export function DesignFilesPanel({
       dirsAtCurrentDir: [...dirs].sort((a, b) => a.localeCompare(b)),
       filesAtCurrentDir: localFiles,
     };
-  }, [files, currentDir]);
+  }, [fileScope, visibleDesignFiles, currentDir]);
 
   const kindCounts = useMemo(() => {
     const counts = new Map<ProjectFileKind, number>();
@@ -333,6 +359,7 @@ export function DesignFilesPanel({
   // clear a kindFilter that was correctly restored from localStorage before
   // the async file list arrived.
   useEffect(() => {
+    if (fileScope) return;
     if (availableKinds.length === 0) return;
     setKindFilter((prev) => {
       if (prev.size === 0) return prev;
@@ -345,12 +372,12 @@ export function DesignFilesPanel({
       }
       return changed ? next : prev;
     });
-  }, [availableKinds]);
+  }, [availableKinds, fileScope]);
 
   const filteredFiles = useMemo(() => {
-    if (kindFilter.size === 0) return filesAtCurrentDir;
+    if (fileScope || kindFilter.size === 0) return filesAtCurrentDir;
     return filesAtCurrentDir.filter((f) => kindFilter.has(f.kind));
-  }, [filesAtCurrentDir, kindFilter]);
+  }, [fileScope, filesAtCurrentDir, kindFilter]);
 
   const sortedFiles = useMemo(() => {
     return [...filteredFiles].sort((a, b) => {
@@ -368,6 +395,21 @@ export function DesignFilesPanel({
   );
 
   const effectivePageSize = pageSize === 'all' ? Math.max(1, sortedFiles.length) : pageSize;
+
+  useEffect(() => {
+    if (!fileScope) return;
+    const preferred =
+      fileScope.preferredFileName && scopedFileNames.has(fileScope.preferredFileName)
+        ? fileScope.preferredFileName
+        : visibleDesignFiles[0]?.name ?? null;
+    setCurrentDir('');
+    setFilterMenuOpen(false);
+    setSelected(new Set());
+    setRenaming(null);
+    setPage(0);
+    setPreview(preferred);
+  }, [fileScope, fileScopeKey, scopedFileNames, visibleDesignFiles]);
+
   const totalPages = Math.max(1, Math.ceil(sortedFiles.length / effectivePageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pageFiles = useMemo(
@@ -415,13 +457,14 @@ export function DesignFilesPanel({
       viewStateHasMounted.current = true;
       return;
     }
+    if (fileScope) return;
     writeViewState(projectId, {
       sortKey,
       sortDir,
       pageSize,
       kindFilter: Array.from(kindFilter),
     });
-  }, [projectId, sortKey, sortDir, pageSize, kindFilter]);
+  }, [fileScope, projectId, sortKey, sortDir, pageSize, kindFilter]);
 
   // Reset to the first page when the filter changes — the previous page
   // index may no longer exist (or may now sit past the new totalPages).
@@ -520,7 +563,10 @@ export function DesignFilesPanel({
     return () => window.clearTimeout(timer);
   }, [dayBoundary]);
 
-  const pluginFolders = useMemo(() => getPluginFolderCandidates(files), [files]);
+  const pluginFolders = useMemo(
+    () => fileScope ? [] : getPluginFolderCandidates(files),
+    [fileScope, files],
+  );
 
   // Prune selections that no longer exist in the current file list
   // (e.g. after a refresh or delete within the same project).
@@ -529,7 +575,7 @@ export function DesignFilesPanel({
   useEffect(() => {
     setSelected((prev) => {
       if (prev.size === 0) return prev;
-      const names = new Set(files.map((f) => f.name));
+      const names = new Set(visibleDesignFiles.map((f) => f.name));
       const next = new Set(prev);
       let changed = false;
       for (const n of next) {
@@ -540,11 +586,11 @@ export function DesignFilesPanel({
       }
       return changed ? next : prev;
     });
-  }, [files]);
+  }, [visibleDesignFiles]);
 
   const previewFile = useMemo(
-    () => files.find((f) => f.name === preview) ?? null,
-    [preview, files],
+    () => visibleDesignFiles.find((f) => f.name === preview) ?? null,
+    [preview, visibleDesignFiles],
   );
 
   const initialPreviewFile = useMemo(
@@ -564,9 +610,9 @@ export function DesignFilesPanel({
 
   useEffect(() => {
     if (!preview) return;
-    if (files.some((f) => f.name === preview)) return;
+    if (visibleDesignFiles.some((f) => f.name === preview)) return;
     setPreview(null);
-  }, [files, preview]);
+  }, [visibleDesignFiles, preview]);
 
   useEffect(() => {
     uiSurfacesPromiseRef.current = null;
@@ -945,7 +991,7 @@ export function DesignFilesPanel({
   function renderDirRow(dirName: string) {
     const fullPath = currentDir === '' ? dirName : `${currentDir}/${dirName}`;
     const prefix = `${fullPath}/`;
-    const count = files.filter((f) => f.name.startsWith(prefix)).length;
+    const count = visibleDesignFiles.filter((f) => f.name.startsWith(prefix)).length;
     return (
       <tr key={`dir:${fullPath}`} className="df-file-row df-dir-row">
         <td className="df-cell-check" />
@@ -1168,7 +1214,7 @@ export function DesignFilesPanel({
     );
 
   const groupToggle =
-    files.length > 0 ? (
+    visibleDesignFiles.length > 0 ? (
       <div
         className="df-group-toggle"
         role="group"
@@ -1197,7 +1243,7 @@ export function DesignFilesPanel({
     );
 
   const kindFilterControl =
-    files.length > 0 && availableKinds.length > 1 ? (
+    !fileScope && visibleDesignFiles.length > 0 && availableKinds.length > 1 ? (
       <div className="df-kind-filter" ref={filterMenuRef}>
         <button
           type="button"
@@ -1273,6 +1319,23 @@ export function DesignFilesPanel({
       </div>
     ) : null;
 
+  const fileScopeControl = fileScope ? (
+    <div className="df-file-scope" role="status" aria-live="polite">
+      <span className="df-file-scope-label">
+        Showing files for <strong>{fileScope.label}</strong>
+      </span>
+      {onClearFileScope ? (
+        <button
+          type="button"
+          className="df-file-scope-clear"
+          onClick={onClearFileScope}
+        >
+          Clear
+        </button>
+      ) : null}
+    </div>
+  ) : null;
+
   const visibleUploadError = uploadError ?? dropReadError;
 
   return (
@@ -1300,6 +1363,7 @@ export function DesignFilesPanel({
             {refreshControl}
             {groupToggle}
             {kindFilterControl}
+            {fileScopeControl}
             {fileActions}
           </div>
           {currentDir !== '' ? (

@@ -176,6 +176,41 @@ describe('DesignFilesPanel grouping', () => {
     expect(screen.queryByText('Today')).toBeNull();
   });
 
+  it('scopes the file browser to imported surface files and clears back to all files', () => {
+    const onClearFileScope = vi.fn();
+    renderPanel(
+      [
+        file({ name: 'apps/web/src/page.tsx', kind: 'code', mime: 'text/typescript' }),
+        file({ name: 'apps/web/src/styles.css', kind: 'code', mime: 'text/css' }),
+        file({ name: 'public/hero.png', kind: 'image', mime: 'image/png' }),
+        file({ name: 'README.md', kind: 'text', mime: 'text/markdown' }),
+      ],
+      {
+        fileScope: {
+          id: 'surface:book',
+          label: 'Book screen',
+          fileNames: [
+            'apps/web/src/page.tsx',
+            'apps/web/src/styles.css',
+            'public/hero.png',
+          ],
+          preferredFileName: 'apps/web/src/page.tsx',
+        },
+        onClearFileScope,
+      },
+    );
+
+    expect(screen.getByText('Book screen')).toBeTruthy();
+    expect(screen.getByTestId('design-file-row-apps/web/src/page.tsx')).toBeTruthy();
+    expect(screen.getByTestId('design-file-row-apps/web/src/styles.css')).toBeTruthy();
+    expect(screen.getByTestId('design-file-row-public/hero.png')).toBeTruthy();
+    expect(screen.queryByTestId('design-file-row-README.md')).toBeNull();
+    expect(document.querySelectorAll('.df-dir-row').length).toBe(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    expect(onClearFileScope).toHaveBeenCalledTimes(1);
+  });
+
   it('opens the rendered runtime URL for imported app HTML previews', async () => {
     const onOpenRenderedPreview = vi.fn();
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

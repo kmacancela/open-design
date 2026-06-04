@@ -42,7 +42,7 @@ import {
   type ProjectMetadata,
   type ProjectFile,
 } from '../types';
-import { DesignFilesPanel } from './DesignFilesPanel';
+import { DesignFilesPanel, type DesignFilesScope } from './DesignFilesPanel';
 import type { PluginFolderAgentAction } from './design-files/pluginFolderActions';
 import { designSystemGithubEvidenceState, repoConnectCopy } from './design-system-github-evidence';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
@@ -93,6 +93,8 @@ interface Props {
   ) => Promise<{ message?: string; url?: string } | void> | { message?: string; url?: string } | void;
   activePluginActionPaths?: Set<string>;
   hiddenPluginActionPaths?: Set<string>;
+  designFilesScope?: DesignFilesScope | null;
+  onClearDesignFilesScope?: () => void;
   preferredPreviewFile?: string | null;
   autoPreviewDesignArtifacts?: boolean;
   focusMode?: boolean;
@@ -246,6 +248,8 @@ export function FileWorkspace({
   onPluginFolderAgentAction,
   activePluginActionPaths,
   hiddenPluginActionPaths,
+  designFilesScope = null,
+  onClearDesignFilesScope,
   preferredPreviewFile = null,
   autoPreviewDesignArtifacts = false,
   focusMode = false,
@@ -339,6 +343,11 @@ export function FileWorkspace({
   useEffect(() => {
     setSurfacePreviewTabs({});
   }, [projectId]);
+
+  useEffect(() => {
+    if (!designFilesScope) return;
+    setActiveTab(DESIGN_FILES_TAB);
+  }, [designFilesScope]);
 
   function setPersistedActive(name: string | null) {
     setActiveTab(name ?? defaultRootTab);
@@ -1178,6 +1187,8 @@ export function FileWorkspace({
             }}
             uploadError={uploadError}
             onClearUploadError={() => setUploadError(null)}
+            fileScope={designFilesScope}
+            onClearFileScope={onClearDesignFilesScope}
             preferredPreviewFile={preferredPreviewFile}
             autoPreviewDesignArtifacts={autoPreviewDesignArtifacts}
             onPluginFolderAgentAction={onPluginFolderAgentAction}

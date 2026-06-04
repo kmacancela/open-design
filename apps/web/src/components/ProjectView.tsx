@@ -142,7 +142,11 @@ import { AppChromeHeader } from './AppChromeHeader';
 import { AvatarMenu } from './AvatarMenu';
 import { HandoffButton } from './HandoffButton';
 import { ProjectDesignSystemPicker } from './ProjectDesignSystemPicker';
-import { ChatPane, type ImportedSurfaceEditableSnapshotRequest } from './ChatPane';
+import {
+  ChatPane,
+  type ImportedSurfaceEditableSnapshotRequest,
+  type ImportedSurfaceFileScopeRequest,
+} from './ChatPane';
 import type { ChatSendMeta } from './ChatComposer';
 import {
   CritiqueTheaterMount,
@@ -152,6 +156,7 @@ import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { decideAutoOpenAfterWrite } from './auto-open-file';
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
+import type { DesignFilesScope } from './DesignFilesPanel';
 import { FileWorkspace } from './FileWorkspace';
 import { Icon } from './Icon';
 import {
@@ -667,6 +672,7 @@ export function ProjectView({
   // include a nonce so re-clicking the same name after the user closed the
   // tab still focuses it.
   const [openRequest, setOpenRequest] = useState<{ name: string; nonce: number } | null>(null);
+  const [designFilesScope, setDesignFilesScope] = useState<DesignFilesScope | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancelRef = useRef<AbortController | null>(null);
   const streamingConversationIdRef = useRef<string | null>(null);
@@ -1134,6 +1140,20 @@ export function ProjectView({
     if (!name) return;
     setOpenRequest({ name, nonce: Date.now() });
   }, []);
+
+  const requestInspectSurfaceFiles = useCallback((request: ImportedSurfaceFileScopeRequest) => {
+    if (request.fileNames.length === 0) return;
+    setDesignFilesScope({
+      id: `surface:${request.surfaceId}`,
+      label: request.label,
+      fileNames: request.fileNames,
+      preferredFileName: request.preferredFileName ?? null,
+    });
+  }, []);
+
+  useEffect(() => {
+    setDesignFilesScope(null);
+  }, [project.id]);
 
   const requestOpenEditableSurface = useCallback(async (request: ImportedSurfaceEditableSnapshotRequest) => {
     if (!request.fileName) return;
@@ -4516,6 +4536,7 @@ export function ProjectView({
               onSendQueuedNow={sendQueuedChatSendNow}
               onRequestOpenFile={requestOpenFile}
               onOpenEditableSurface={requestOpenEditableSurface}
+              onInspectSurfaceFiles={requestInspectSurfaceFiles}
               onRequestPluginFolderAgentAction={handlePluginFolderAgentAction}
               activePluginActionPaths={activePluginActionPaths}
               hiddenPluginActionPaths={hiddenAssistantPluginActionPaths}
@@ -4621,6 +4642,8 @@ export function ProjectView({
           onSendBoardCommentAttachments={handleSendBoardCommentAttachments}
           onPluginFolderAgentAction={handlePluginFolderAgentAction}
           activePluginActionPaths={activePluginActionPaths}
+          designFilesScope={designFilesScope}
+          onClearDesignFilesScope={() => setDesignFilesScope(null)}
           preferredPreviewFile={project.metadata?.entryFile ?? null}
           autoPreviewDesignArtifacts={project.metadata?.importedFrom === 'folder'}
           focusMode={workspaceFocused}
