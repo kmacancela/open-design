@@ -96,6 +96,55 @@ describe('editable snapshots', () => {
     frame.remove();
   });
 
+  it('inlines per-element styles so mockup snapshots do not fall back to browser defaults', () => {
+    document.documentElement.innerHTML = `
+      <head>
+        <style>
+          .calendar-card {
+            display: grid;
+            grid-template-columns: repeat(7, minmax(0, 1fr));
+            gap: 8px;
+            width: 420px;
+            padding: 24px;
+            border-radius: 18px;
+            background: rgb(239, 68, 68);
+            color: rgb(255, 255, 255);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+          }
+          .calendar-card a {
+            color: rgb(255, 255, 255);
+            text-decoration: none;
+            font-weight: 700;
+          }
+          .calendar-card button {
+            border: 0;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.24);
+            color: rgb(255, 255, 255);
+            padding: 6px 10px;
+          }
+        </style>
+      </head>
+      <body>
+        <section class="calendar-card">
+          <a href="/calendar">June 2026</a>
+          <button type="button">3</button>
+        </section>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface());
+
+    expect(html).toContain('class="calendar-card"');
+    expect(html).toContain('display: grid');
+    expect(html).toContain('background: rgb(239, 68, 68)');
+    expect(html).toContain('border-radius: 18px');
+    expect(html).toContain('color: rgb(255, 255, 255)');
+    expect(html).toMatch(/<a\b[^>]*style="[^"]*color: rgb\(255, 255, 255\)/);
+    expect(html).toMatch(/<button\b[^>]*style="[^"]*background: rgba\(255, 255, 255, 0\.24\)/);
+    expect(isReusableEditableSnapshotHtml(html)).toBe(true);
+  });
+
   it('normalizes runtime reveal and intro animation states for static editing', () => {
     document.documentElement.innerHTML = `
       <head>
@@ -190,6 +239,47 @@ describe('editable snapshots', () => {
 
     expect(isRejectedEditableSnapshotHtml(rawSnapshot)).toBe(true);
     expect(isReusableEditableSnapshotHtml(rawSnapshot)).toBe(false);
+  });
+
+  it('rejects old body-only snapshots that would reopen as botched mockups', () => {
+    const bodyOnlySnapshot = `
+      <!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block;">
+        <body style="margin: 0; background: rgb(20, 10, 8);"><main><h1>Unstyled content</h1></main></body>
+      </html>
+    `;
+
+    expect(isRejectedEditableSnapshotHtml(bodyOnlySnapshot)).toBe(true);
+    expect(isReusableEditableSnapshotHtml(bodyOnlySnapshot)).toBe(false);
+  });
+
+  it('rejects partial snapshots where most body descendants lack inline styles', () => {
+    const partialSnapshot = `
+      <!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block;">
+        <body style="margin: 0; background: rgb(20, 10, 8); color: rgb(255, 255, 255);">
+          <header>
+            <a href="/">FH</a>
+            <a href="/resources">Resources</a>
+            <button style="background: rgb(96, 96, 96);">Menu</button>
+          </header>
+          <main>
+            <h1>Book with Manufacturer</h1>
+            <p>Select a date, time, and provide details</p>
+            <section>
+              <button>1</button>
+              <button>2</button>
+              <button>3</button>
+              <button>4</button>
+              <button>5</button>
+            </section>
+          </main>
+        </body>
+      </html>
+    `;
+
+    expect(isRejectedEditableSnapshotHtml(partialSnapshot)).toBe(true);
+    expect(isReusableEditableSnapshotHtml(partialSnapshot)).toBe(false);
   });
 
   it('rejects stale editable snapshots that copied runtime content security policy', () => {

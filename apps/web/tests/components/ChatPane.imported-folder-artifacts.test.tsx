@@ -227,7 +227,7 @@ describe('ChatPane imported folder surfaces', () => {
         });
       }
       if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
-        return html('<!doctype html><html data-od-editable-snapshot="true" style="color: rgb(1, 2, 3);"><body style="font-family: Inter;"><main>Existing edit</main></body></html>');
+        return html('<!doctype html><html data-od-editable-snapshot="true" style="color: rgb(1, 2, 3);"><body style="font-family: Inter;"><main style="display: grid; color: rgb(1, 2, 3);">Existing edit</main></body></html>');
       }
       throw new Error(`unexpected fetch ${url}`);
     });
@@ -360,7 +360,7 @@ describe('ChatPane imported folder surfaces', () => {
     });
   });
 
-  it('regenerates an existing editable snapshot when generated inline styles are missing', async () => {
+  it('regenerates an existing editable snapshot when generated inline style coverage is incomplete', async () => {
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -411,8 +411,15 @@ describe('ChatPane imported folder surfaces', () => {
       }
       if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
         return html(`<!doctype html>
-          <html data-od-editable-snapshot="true">
-            <body><main><h1>Raw stale snapshot</h1></main></body>
+          <html data-od-editable-snapshot="true" style="display: block;">
+            <body style="margin: 0; background: rgb(20, 10, 8);">
+              <header>
+                <a href="/">FH</a>
+                <a href="/messages">Messages</a>
+                <button style="background: rgb(96, 96, 96);">Menu</button>
+              </header>
+              <main><h1>Raw stale snapshot</h1></main>
+            </body>
           </html>
         `);
       }

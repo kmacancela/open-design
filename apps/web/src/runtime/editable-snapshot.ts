@@ -1,22 +1,96 @@
 import type { ProjectUiSurface } from '../types';
 
 const EDITABLE_SNAPSHOT_DIR = 'design-snapshots';
-const ROOT_STYLE_PROPERTIES = [
+const MIN_STYLED_SNAPSHOT_DESCENDANT_RATIO = 0.45;
+const MIN_RICH_STYLED_SNAPSHOT_DESCENDANTS = 4;
+const SNAPSHOT_STYLE_PROPERTIES = [
   'background',
   'background-color',
+  'background-image',
+  'background-position',
+  'background-repeat',
+  'background-size',
+  'border',
+  'border-color',
+  'border-radius',
+  'border-style',
+  'border-width',
+  'border-top',
+  'border-right',
+  'border-bottom',
+  'border-left',
+  'box-shadow',
   'box-sizing',
   'color',
   'color-scheme',
+  'column-gap',
   'display',
+  'fill',
+  'flex',
+  'flex-basis',
+  'flex-direction',
+  'flex-grow',
+  'flex-shrink',
+  'flex-wrap',
   'font',
   'font-family',
   'font-size',
   'font-weight',
+  'gap',
+  'grid-auto-columns',
+  'grid-auto-flow',
+  'grid-auto-rows',
+  'grid-template-columns',
+  'grid-template-rows',
+  'height',
+  'inset',
+  'justify-content',
+  'align-content',
+  'justify-items',
+  'align-items',
+  'letter-spacing',
   'line-height',
   'margin',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'max-height',
+  'max-width',
   'min-height',
+  'min-width',
+  'object-fit',
+  'object-position',
+  'opacity',
+  'outline',
+  'outline-color',
+  'outline-offset',
+  'outline-style',
+  'outline-width',
+  'overflow',
+  'overflow-x',
+  'overflow-y',
   'padding',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'position',
+  'right',
+  'row-gap',
+  'stroke',
+  'stroke-width',
+  'text-align',
+  'text-decoration',
+  'text-transform',
   'text-rendering',
+  'top',
+  'transform',
+  'vertical-align',
+  'visibility',
+  'white-space',
+  'width',
+  'z-index',
   '-webkit-font-smoothing',
 ] as const;
 
@@ -89,7 +163,29 @@ function rejectedSnapshotText(text: string): boolean {
 }
 
 function hasGeneratedInlineStyles(html: string): boolean {
+  return hasDocumentShellInlineStyles(html) && hasBodyDescendantInlineStyleCoverage(html);
+}
+
+function hasDocumentShellInlineStyles(html: string): boolean {
   return /<html\b[^>]*\sstyle\s*=/i.test(html) || /<body\b[^>]*\sstyle\s*=/i.test(html);
+}
+
+function hasBodyDescendantInlineStyleCoverage(html: string): boolean {
+  const body = /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(html)?.[1] ?? '';
+  const tags = Array.from(body.matchAll(/<([a-z][\w:-]*)\b([^>]*)>/giu))
+    .map((match) => ({
+      tag: match[1] ?? '',
+      attrs: match[2] ?? '',
+    }))
+    .filter(({ tag }) => !/^(?:script|style|link|meta|base|template|noscript)$/iu.test(tag));
+  if (tags.length === 0) return false;
+  const styledCount = tags.filter(({ attrs }) => /\sstyle\s*=/iu.test(attrs)).length;
+  if (tags.length <= MIN_RICH_STYLED_SNAPSHOT_DESCENDANTS) return styledCount > 0;
+  const requiredStyledCount = Math.max(
+    MIN_RICH_STYLED_SNAPSHOT_DESCENDANTS,
+    Math.ceil(tags.length * MIN_STYLED_SNAPSHOT_DESCENDANT_RATIO),
+  );
+  return styledCount >= requiredStyledCount;
 }
 
 function hasCopiedContentSecurityPolicy(html: string): boolean {
@@ -125,11 +221,19 @@ function isAppMountElement(element: HTMLElement): boolean {
 function inlineComputedStyles(document: Document, clone: HTMLElement): void {
   const win = document.defaultView;
   if (!win) return;
-  copySelectedComputedStyles(win, document.documentElement, clone);
-  const sourceBody = document.body;
-  const cloneBody = clone.querySelector('body');
-  if (sourceBody && cloneBody instanceof win.HTMLElement) {
-    copySelectedComputedStyles(win, sourceBody, cloneBody);
+  const sourceElements = [
+    document.documentElement,
+    ...Array.from(document.documentElement.querySelectorAll('*')),
+  ];
+  const cloneElements = [
+    clone,
+    ...Array.from(clone.querySelectorAll('*')),
+  ];
+  for (let index = 0; index < sourceElements.length; index += 1) {
+    const source = sourceElements[index];
+    const target = cloneElements[index];
+    if (!source || !target) continue;
+    copySelectedComputedStyles(win, source, target);
   }
 }
 
@@ -138,12 +242,14 @@ function copySelectedComputedStyles(
   source: Element,
   target: Element,
 ): void {
-  if (!(source instanceof win.HTMLElement) || !(target instanceof win.HTMLElement)) return;
+  if (!(source instanceof win.Element) || !(target instanceof win.Element)) return;
+  const styleTarget = target as Element & { style?: CSSStyleDeclaration };
+  if (!styleTarget.style) return;
   const computed = win.getComputedStyle(source);
-  for (const property of ROOT_STYLE_PROPERTIES) {
+  for (const property of SNAPSHOT_STYLE_PROPERTIES) {
     const value = computed.getPropertyValue(property);
     if (!value) continue;
-    target.style.setProperty(property, value, computed.getPropertyPriority(property));
+    styleTarget.style.setProperty(property, value, computed.getPropertyPriority(property));
   }
 }
 
