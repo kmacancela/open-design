@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEditableSnapshotHtml,
   editableSnapshotFileName,
+  editableSnapshotViewportWidth,
   isEditableSnapshotRevisionFileName,
   isRejectedEditableSnapshotHtml,
   isReusableEditableSnapshotHtml,
   latestEditableSnapshotFileName,
   nextEditableSnapshotFileName,
+  normalizeEditableSnapshotPreviewHtml,
   repairEditableSnapshotResourceUrls,
 } from '../../src/runtime/editable-snapshot';
 import type { ProjectUiSurface } from '../../src/types';
@@ -358,7 +360,7 @@ describe('editable snapshots', () => {
     expect(isReusableEditableSnapshotHtml(repaired)).toBe(true);
   });
 
-  it('normalizes snapshot shell widths without changing fixed inner components', () => {
+  it('preserves captured snapshot layout widths while recording the viewport width', () => {
     document.documentElement.setAttribute(
       'style',
       'display: block; width: 1280px; max-width: 1280px; min-width: 1280px;',
@@ -397,30 +399,30 @@ describe('editable snapshots', () => {
     const generatedContentRail = generatedDocument.querySelector('.max-w-7xl') as HTMLElement;
     const generatedFixedPanel = generatedDocument.querySelector('.fixed-panel') as HTMLElement;
 
-    expect(generatedDocument.documentElement.style.width).toBe('100%');
-    expect(generatedDocument.documentElement.style.maxWidth).toBe('none');
-    expect(generatedDocument.documentElement.style.minWidth).toBe('0px');
-    expect(generatedDocument.body.style.width).toBe('100%');
-    expect(generatedDocument.body.style.maxWidth).toBe('none');
-    expect(generatedDocument.body.style.minWidth).toBe('0px');
-    expect(generatedRoot.style.width).toBe('100%');
-    expect(generatedRoot.style.maxWidth).toBe('none');
-    expect(generatedRoot.style.minWidth).toBe('0px');
-    expect(generatedRootMain.style.width).toBe('100%');
-    expect(generatedRootMain.style.maxWidth).toBe('none');
-    expect(generatedRootMain.style.minWidth).toBe('0px');
+    expect(generatedDocument.documentElement.style.width).toBe('1280px');
+    expect(generatedDocument.documentElement.style.maxWidth).toBe('1280px');
+    expect(generatedDocument.documentElement.style.minWidth).toBe('1280px');
+    expect(generatedDocument.body.style.width).toBe('1280px');
+    expect(generatedDocument.body.style.maxWidth).toBe('1280px');
+    expect(generatedDocument.body.style.minWidth).toBe('1280px');
+    expect(generatedRoot.style.width).toBe('1280px');
+    expect(generatedRoot.style.maxWidth).toBe('1280px');
+    expect(generatedRoot.style.minWidth).toBe('1280px');
+    expect(generatedRootMain.style.width).toBe('1280px');
+    expect(generatedRootMain.style.maxWidth).toBe('1280px');
+    expect(generatedRootMain.style.minWidth).toBe('1280px');
     expect(generatedCard.style.width).toBe('420px');
-    expect(generatedShell.style.width).toBe('100%');
-    expect(generatedShell.style.maxWidth).toBe('none');
-    expect(generatedShell.style.minWidth).toBe('0px');
-    expect(generatedBackground.style.width).toBe('100%');
-    expect(generatedBackground.style.maxWidth).toBe('none');
-    expect(generatedHeader.style.width).toBe('100%');
-    expect(generatedHeader.style.maxWidth).toBe('none');
-    expect(generatedPageMain.style.width).toBe('100%');
-    expect(generatedPageMain.style.maxWidth).toBe('none');
-    expect(generatedFooter.style.width).toBe('100%');
-    expect(generatedFooter.style.maxWidth).toBe('none');
+    expect(generatedShell.style.width).toBe('1280px');
+    expect(generatedShell.style.maxWidth).toBe('1280px');
+    expect(generatedShell.style.minWidth).toBe('1280px');
+    expect(generatedBackground.style.width).toBe('1280px');
+    expect(generatedBackground.style.maxWidth).toBe('1280px');
+    expect(generatedHeader.style.width).toBe('1280px');
+    expect(generatedHeader.style.maxWidth).toBe('1280px');
+    expect(generatedPageMain.style.width).toBe('1280px');
+    expect(generatedPageMain.style.maxWidth).toBe('1280px');
+    expect(generatedFooter.style.width).toBe('1280px');
+    expect(generatedFooter.style.maxWidth).toBe('1280px');
     expect(generatedContentRail.style.width).toBe('1216px');
     expect(generatedContentRail.style.maxWidth).toBe('1280px');
     expect(generatedFixedPanel.style.width).toBe('480px');
@@ -457,28 +459,200 @@ describe('editable snapshots', () => {
     const repairedContentRail = repairedDocument.querySelector('.max-w-7xl') as HTMLElement;
     const repairedFixedPanel = repairedDocument.querySelector('.fixed-panel') as HTMLElement;
 
-    expect(repairedDocument.documentElement.style.width).toBe('100%');
-    expect(repairedDocument.documentElement.style.maxWidth).toBe('none');
-    expect(repairedDocument.documentElement.style.minWidth).toBe('0px');
-    expect(repairedDocument.body.style.width).toBe('100%');
-    expect(repairedDocument.body.style.maxWidth).toBe('none');
-    expect(repairedDocument.body.style.minWidth).toBe('0px');
-    expect(repairedRoot.style.width).toBe('100%');
-    expect(repairedRoot.style.maxWidth).toBe('none');
-    expect(repairedRoot.style.minWidth).toBe('0px');
-    expect(repairedRootMain.style.width).toBe('100%');
-    expect(repairedRootMain.style.maxWidth).toBe('none');
-    expect(repairedRootMain.style.minWidth).toBe('0px');
+    expect(repairedDocument.documentElement.getAttribute('data-od-snapshot-width')).toBe('1280');
+    expect(editableSnapshotViewportWidth(repaired)).toBe(1280);
+    expect(repairedDocument.documentElement.style.width).toBe('1280px');
+    expect(repairedDocument.documentElement.style.maxWidth).toBe('1280px');
+    expect(repairedDocument.documentElement.style.minWidth).toBe('1280px');
+    expect(repairedDocument.body.style.width).toBe('1280px');
+    expect(repairedDocument.body.style.maxWidth).toBe('1280px');
+    expect(repairedDocument.body.style.minWidth).toBe('1280px');
+    expect(repairedRoot.style.width).toBe('1280px');
+    expect(repairedRoot.style.maxWidth).toBe('1280px');
+    expect(repairedRoot.style.minWidth).toBe('1280px');
+    expect(repairedRootMain.style.width).toBe('1280px');
+    expect(repairedRootMain.style.maxWidth).toBe('1280px');
+    expect(repairedRootMain.style.minWidth).toBe('1280px');
     expect(repairedCard.style.width).toBe('420px');
-    expect(repairedShell.style.width).toBe('100%');
-    expect(repairedShell.style.maxWidth).toBe('none');
-    expect(repairedShell.style.minWidth).toBe('0px');
-    expect(repairedPageMain.style.width).toBe('100%');
-    expect(repairedPageMain.style.maxWidth).toBe('none');
+    expect(repairedShell.style.width).toBe('1280px');
+    expect(repairedShell.style.maxWidth).toBe('1280px');
+    expect(repairedShell.style.minWidth).toBe('1280px');
+    expect(repairedPageMain.style.width).toBe('1280px');
+    expect(repairedPageMain.style.maxWidth).toBe('1280px');
     expect(repairedContentRail.style.width).toBe('1216px');
     expect(repairedContentRail.style.maxWidth).toBe('1280px');
     expect(repairedFixedPanel.style.width).toBe('480px');
     expect(isReusableEditableSnapshotHtml(repaired)).toBe(true);
+  });
+
+  it('infers imported snapshot viewport widths for stable-scale editing', () => {
+    const repaired = repairEditableSnapshotResourceUrls(`
+      <!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+        <body style="display: block; width: 100%; max-width: none; min-width: 0px;">
+          <header class="fixed top-0 left-0 right-0" style="display: block; position: fixed; width: 1280px; max-width: none; min-width: 0px;">
+            <div class="container mx-auto nav-container" style="display: block; width: 1280px; max-width: 1400px; min-width: 0px;">Nav</div>
+          </header>
+          <div id="root" style="display: block; position: relative; width: 100%; max-width: none; min-width: 0px;">
+            <div class="grain" style="display: block; position: static; width: 1280px; max-width: none; min-width: 0px;">
+              <main style="display: block; position: static; width: 1280px; max-width: none; min-width: 0px;">
+                <section
+                  id="hero"
+                  class="relative min-h-[90vh] overflow-hidden flex flex-col"
+                  style="display: flex; position: relative; width: 1280px; max-width: none; min-width: 0px;"
+                >
+                  <div class="absolute inset-0" style="display: block; position: absolute; width: 1280px; max-width: none; min-width: 0px;"></div>
+                  <div class="relative z-10 flex-1 hero-content" style="display: flex; position: relative; width: 1280px; max-width: none; min-width: 0px;">
+                    <div class="container mx-auto responsive-container" style="display: block; width: 1280px; max-width: 1400px; min-width: 0px;">Responsive rail</div>
+                    <div class="mx-auto max-w-7xl" style="display: block; width: 960px; max-width: 960px;">Content rail</div>
+                  </div>
+                  <section class="fixed-panel" style="display: block; width: 420px; max-width: 420px;">Fixed panel</section>
+                </section>
+              </main>
+            </div>
+          </div>
+        </body>
+      </html>
+    `, surface());
+
+    expect(repaired).not.toBeNull();
+    const repairedDocument = new DOMParser().parseFromString(repaired!, 'text/html');
+    const repairedHeader = repairedDocument.querySelector('header') as HTMLElement;
+    const repairedNavContainer = repairedDocument.querySelector('.nav-container') as HTMLElement;
+    const repairedRoot = repairedDocument.querySelector('#root') as HTMLElement;
+    const repairedGrain = repairedDocument.querySelector('.grain') as HTMLElement;
+    const repairedMain = repairedDocument.querySelector('main') as HTMLElement;
+    const repairedHero = repairedDocument.querySelector('#hero') as HTMLElement;
+    const repairedHeroMedia = repairedDocument.querySelector('.inset-0') as HTMLElement;
+    const repairedHeroContent = repairedDocument.querySelector('.hero-content') as HTMLElement;
+    const repairedResponsiveContainer = repairedDocument.querySelector('.responsive-container') as HTMLElement;
+    const repairedContentRail = repairedDocument.querySelector('.max-w-7xl') as HTMLElement;
+    const repairedFixedPanel = repairedDocument.querySelector('.fixed-panel') as HTMLElement;
+
+    expect(repairedDocument.documentElement.getAttribute('data-od-snapshot-width')).toBe('1280');
+    expect(editableSnapshotViewportWidth(repaired)).toBe(1280);
+    expect(repairedHeader.style.width).toBe('1280px');
+    expect(repairedHeader.style.maxWidth).toBe('none');
+    expect(repairedNavContainer.style.width).toBe('1280px');
+    expect(repairedNavContainer.style.maxWidth).toBe('1400px');
+    expect(repairedRoot.style.width).toBe('100%');
+    expect(repairedGrain.style.width).toBe('1280px');
+    expect(repairedGrain.style.maxWidth).toBe('none');
+    expect(repairedMain.style.width).toBe('1280px');
+    expect(repairedMain.style.maxWidth).toBe('none');
+    expect(repairedHero.style.width).toBe('1280px');
+    expect(repairedHero.style.maxWidth).toBe('none');
+    expect(repairedHeroMedia.style.width).toBe('1280px');
+    expect(repairedHeroMedia.style.maxWidth).toBe('none');
+    expect(repairedHeroContent.style.width).toBe('1280px');
+    expect(repairedHeroContent.style.maxWidth).toBe('none');
+    expect(repairedResponsiveContainer.style.width).toBe('1280px');
+    expect(repairedResponsiveContainer.style.maxWidth).toBe('1400px');
+    expect(repairedContentRail.style.width).toBe('960px');
+    expect(repairedContentRail.style.maxWidth).toBe('960px');
+    expect(repairedFixedPanel.style.width).toBe('420px');
+    expect(repairedFixedPanel.style.maxWidth).toBe('420px');
+    expect(isReusableEditableSnapshotHtml(repaired)).toBe(true);
+
+    expect(editableSnapshotViewportWidth(`
+      <!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+        <body style="display: block; width: 100%; max-width: none; min-width: 0px;">
+          <div id="root" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+            <div class="grain" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+              <main style="display: block; width: 100%; max-width: none; min-width: 0px;">
+                <section class="section-lg" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+                  <div class="container mx-auto" style="display: block; width: 100%; max-width: 1400px; min-width: 0px;">Rail</div>
+                </section>
+              </main>
+            </div>
+          </div>
+        </body>
+      </html>
+    `)).toBe(1400);
+
+    const restampedSnapshot = repairEditableSnapshotResourceUrls(`
+      <!doctype html>
+      <html
+        data-od-editable-snapshot="true"
+        data-od-snapshot-width="1400"
+        style="display: block; width: 100%; max-width: none; min-width: 0px;"
+      >
+        <body style="display: block; width: 100%; max-width: none; min-width: 0px;">
+          <div id="root" style="display: block; width: 100%; max-width: none; min-width: 0px;">
+            <main style="display: block; width: 100%; max-width: none; min-width: 0px;">
+              <div class="container mx-auto" style="display: block; width: 100%; max-width: 1400px; min-width: 0px;">
+                Ready to create?
+              </div>
+              <svg class="w-full h-16" style="display: block; width: 1280px; max-width: none; min-width: 0px;"></svg>
+            </main>
+          </div>
+        </body>
+      </html>
+    `, surface());
+    expect(restampedSnapshot).not.toBeNull();
+    const restampedDocument = new DOMParser().parseFromString(restampedSnapshot!, 'text/html');
+    const restampedFullBleed = restampedDocument.querySelector('.w-full') as HTMLElement;
+    expect(restampedDocument.documentElement.getAttribute('data-od-snapshot-width')).toBe('1280');
+    expect(editableSnapshotViewportWidth(restampedSnapshot)).toBe(1280);
+    expect(restampedFullBleed.style.width).toBe('1280px');
+
+  });
+
+  it('stamps editable snapshot preview width without rewriting captured layout widths', () => {
+    const normalized = normalizeEditableSnapshotPreviewHtml(`
+      <!doctype html>
+      <html
+        data-od-editable-snapshot="true"
+        data-od-snapshot-width="1400"
+        style="display: block; width: 100%; max-width: none; min-width: 0px;"
+      >
+        <body style="display: block; width: 100%; max-width: none; min-width: 0px;">
+          <main style="display: block; width: 100%; max-width: none; min-width: 0px;">
+            <svg class="w-full h-16" style="display: block; width: 1280px; max-width: none; min-width: 0px;"></svg>
+          </main>
+        </body>
+      </html>
+    `);
+
+    expect(normalized).not.toBeNull();
+    const normalizedDocument = new DOMParser().parseFromString(normalized!, 'text/html');
+    const fullBleedLine = normalizedDocument.querySelector('.w-full') as HTMLElement;
+    expect(normalizedDocument.documentElement.getAttribute('data-od-snapshot-width')).toBe('1280');
+    expect(editableSnapshotViewportWidth(normalized)).toBe(1280);
+    expect(normalizedDocument.documentElement.style.width).toBe('100%');
+    expect(normalizedDocument.body.style.width).toBe('100%');
+    expect(fullBleedLine.style.width).toBe('1280px');
+
+    const normalizedLayout = normalizeEditableSnapshotPreviewHtml(`
+      <!doctype html>
+      <html
+        data-od-editable-snapshot="true"
+        data-od-snapshot-width="1152"
+        style="display: block; width: 100%; max-width: none; min-width: 0px;"
+      >
+        <body style="display: block; width: 100%; max-width: none; min-width: 0px;">
+          <main style="display: block; width: 100%; max-width: none; min-width: 0px;">
+            <div class="mx-auto max-w-7xl" style="display: block; width: 1280px; max-width: 1280px; margin: 0px;">Centered rail</div>
+            <section class="fixed-panel" style="display: block; width: 420px; max-width: 420px; margin: 0px;">Fixed panel</section>
+          </main>
+        </body>
+      </html>
+    `);
+
+    expect(normalizedLayout).not.toBeNull();
+    const normalizedLayoutDocument = new DOMParser().parseFromString(normalizedLayout!, 'text/html');
+    const centeredRail = normalizedLayoutDocument.querySelector('.max-w-7xl') as HTMLElement;
+    const fixedPanel = normalizedLayoutDocument.querySelector('.fixed-panel') as HTMLElement;
+    expect(normalizedLayoutDocument.documentElement.getAttribute('data-od-snapshot-width')).toBe('1280');
+    expect(editableSnapshotViewportWidth(normalizedLayout)).toBe(1280);
+    expect(centeredRail.style.width).toBe('1280px');
+    expect(centeredRail.style.maxWidth).toBe('1280px');
+    expect(centeredRail.style.marginLeft).toBe('0px');
+    expect(centeredRail.style.marginRight).toBe('0px');
+    expect(fixedPanel.style.width).toBe('420px');
+    expect(fixedPanel.style.marginLeft).not.toBe('auto');
+    expect(fixedPanel.style.marginRight).not.toBe('auto');
   });
 
   it('normalizes runtime reveal and intro animation states for static editing', () => {

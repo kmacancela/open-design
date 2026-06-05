@@ -1,8 +1,12 @@
 import type { ProjectUiSurface } from '../types';
 
 const EDITABLE_SNAPSHOT_DIR = 'design-snapshots';
+const EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR = 'data-od-snapshot-width';
 const MIN_STYLED_SNAPSHOT_DESCENDANT_RATIO = 0.45;
 const MIN_RICH_STYLED_SNAPSHOT_DESCENDANTS = 4;
+const MIN_SNAPSHOT_VIEWPORT_WIDTH = 320;
+const MIN_DESKTOP_SNAPSHOT_VIEWPORT_WIDTH = 768;
+const MAX_SNAPSHOT_VIEWPORT_WIDTH = 10_000;
 const PROJECT_PUBLIC_DIR = 'public';
 const PROJECT_RESOURCE_FILE_EXTENSION_RE = /\.(?:avif|bmp|css|eot|gif|ico|jpe?g|m4a|m4v|mov|mp3|mp4|oga|ogg|ogv|otf|png|svg|ttf|wav|webm|webp|woff2?)$/iu;
 const CSS_FONT_FACE_RULE_TYPE = 5;
@@ -110,6 +114,8 @@ interface ProjectFileLookup {
   suffix: Map<string, string>;
 }
 
+type SnapshotStyledElement = HTMLElement | SVGElement;
+
 export function editableSnapshotFileName(surface: ProjectUiSurface): string {
   const slug = slugifySnapshotName(surface.id)
     || slugifySnapshotName(surface.label)
@@ -182,14 +188,52 @@ export function buildEditableSnapshotHtml(
   syncFormState(document, clone);
   normalizeSnapshotMediaPlayback(clone);
   normalizeFrozenSnapshotState(document, clone);
-  normalizeSnapshotShellWidth(clone);
   pruneRuntimeOnlyNodes(clone);
   prepareSnapshotHead(document, clone, surface);
 
   clone.setAttribute('data-od-editable-snapshot', 'true');
   clone.setAttribute('data-od-surface-id', surface.id || surface.entryFile);
+  const documentViewportWidth = snapshotDocumentViewportWidth(document);
+  const viewportWidth = documentViewportWidth
+    ?? snapshotCapturedViewportWidthFromRoot(clone)
+    ?? inferSnapshotViewportWidthFromRoot(clone);
+  if (viewportWidth) clone.setAttribute(EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR, String(viewportWidth));
 
   return `<!doctype html>\n${clone.outerHTML}`;
+}
+
+export function editableSnapshotViewportWidth(html: string | null): number | null {
+  if (!html || !html.includes('data-od-editable-snapshot="true"')) return null;
+  const explicitWidth = parseSnapshotViewportWidth(
+    html.match(new RegExp(`\\b${EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR}=["']([^"']+)["']`, 'iu'))?.[1],
+  );
+  if (typeof DOMParser !== 'undefined') {
+    const snapshotDocument = new DOMParser().parseFromString(html, 'text/html');
+    const root = snapshotDocument.documentElement;
+    if (root) {
+      const inferredWidth = resolvedSnapshotViewportWidthFromRoot(root, explicitWidth);
+      if (inferredWidth !== null) return inferredWidth;
+    }
+  }
+  if (explicitWidth !== null) return explicitWidth;
+  return inferSnapshotViewportWidthFromHtml(html);
+}
+
+export function normalizeEditableSnapshotPreviewHtml(html: string | null): string | null {
+  if (!html || !html.includes('data-od-editable-snapshot="true"') || typeof DOMParser === 'undefined') return html;
+  const snapshotDocument = new DOMParser().parseFromString(html, 'text/html');
+  const root = snapshotDocument.documentElement;
+  if (!root) return html;
+
+  const explicitViewportWidth = explicitSnapshotViewportWidth(root);
+  const viewportWidth = resolvedSnapshotViewportWidthFromRoot(root, explicitViewportWidth);
+  let changed = false;
+  if (viewportWidth && viewportWidth !== explicitViewportWidth) {
+    root.setAttribute(EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR, String(viewportWidth));
+    changed = true;
+  }
+  changed = normalizeSnapshotMediaPlayback(root) || changed;
+  return changed ? `<!doctype html>\n${root.outerHTML}` : html;
 }
 
 export function isRejectedEditableSnapshotHtml(html: string | null): boolean {
@@ -219,7 +263,12 @@ export function repairEditableSnapshotResourceUrls(
   const root = snapshotDocument.documentElement;
   if (!root) return html;
   let didRepair = normalizeSnapshotMediaPlayback(root);
-  didRepair = normalizeSnapshotShellWidth(root) || didRepair;
+  const explicitViewportWidth = explicitSnapshotViewportWidth(root);
+  const viewportWidth = resolvedSnapshotViewportWidthFromRoot(root, explicitViewportWidth);
+  if (viewportWidth && viewportWidth !== explicitViewportWidth) {
+    root.setAttribute(EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR, String(viewportWidth));
+    didRepair = true;
+  }
   const rebaseUrl = createProjectResourceUrlRebaser(snapshotDocument, surface, options);
   if (!rebaseUrl) return didRepair ? `<!doctype html>\n${root.outerHTML}` : html;
 
@@ -784,6 +833,206 @@ function projectRawUrl(projectId: string, filePath: string): string {
   return `/api/projects/${encodeURIComponent(projectId)}/raw/${safePath}`;
 }
 
+function snapshotDocumentViewportWidth(document: Document): number | null {
+  const win = document.defaultView;
+  return parseSnapshotViewportWidth(win?.innerWidth)
+    ?? parseSnapshotViewportWidth(document.documentElement?.clientWidth)
+    ?? parseSnapshotViewportWidth(document.body?.clientWidth);
+}
+
+function explicitSnapshotViewportWidth(root: HTMLElement): number | null {
+  return parseSnapshotViewportWidth(root.getAttribute(EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR));
+}
+
+function resolvedSnapshotViewportWidthFromRoot(root: HTMLElement, explicitWidth = explicitSnapshotViewportWidth(root)): number | null {
+  if (explicitWidth !== null) {
+    const capturedWidth = snapshotFullBleedViewportWidthFromRoot(root, explicitWidth);
+    if (
+      capturedWidth !== null
+      && shouldPreferCapturedSnapshotViewportWidth(explicitWidth, capturedWidth)
+    ) {
+      return capturedWidth;
+    }
+    const layoutWidth = snapshotResponsiveLayoutViewportWidthFromRoot(root, explicitWidth, {
+      includeMaxWidth: false,
+    });
+    if (
+      layoutWidth !== null
+      && layoutWidth > explicitWidth
+      && shouldPreferCapturedSnapshotViewportWidth(explicitWidth, layoutWidth)
+    ) {
+      return layoutWidth;
+    }
+    return explicitWidth;
+  }
+  return snapshotCapturedViewportWidthFromRoot(root)
+    ?? snapshotResponsiveLayoutViewportWidthFromRoot(root)
+    ?? inferSnapshotViewportWidthFromRoot(root);
+}
+
+function shouldPreferCapturedSnapshotViewportWidth(explicitWidth: number, capturedWidth: number): boolean {
+  if (capturedWidth === explicitWidth) return false;
+  if (capturedWidth < MIN_DESKTOP_SNAPSHOT_VIEWPORT_WIDTH) return false;
+  const ratio = capturedWidth / explicitWidth;
+  return ratio >= 0.65 && ratio <= 1.35;
+}
+
+function snapshotCapturedViewportWidthFromRoot(root: HTMLElement, referenceWidth: number | null = null): number | null {
+  const structuralWidths: number[] = [];
+  const addElementWidth = (element: SnapshotStyledElement | null, bucket: number[]) => {
+    if (!element) return;
+    const width = parseSnapshotPixelValue(element.style.getPropertyValue('width').trim());
+    if (width !== null) bucket.push(width);
+  };
+
+  addElementWidth(root, structuralWidths);
+  addElementWidth(snapshotBodyElement(root), structuralWidths);
+  for (const selector of [
+    '#root, #app, #__next, #app-root, #root-app, [data-v-app]',
+    'body > header, body > main, body > footer, body > section, body > div',
+    '#root > *, #app > *, #__next > *, #app-root > *, #root-app > *',
+    'main, header, footer',
+    'main > section, main > div',
+  ]) {
+    for (const element of Array.from(root.querySelectorAll(selector))) {
+      addElementWidth(snapshotHTMLElement(root, element), structuralWidths);
+    }
+  }
+
+  return snapshotFullBleedViewportWidthFromRoot(root, referenceWidth)
+    ?? snapshotResponsiveLayoutViewportWidthFromRoot(root, referenceWidth)
+    ?? largestSnapshotViewportCandidate(structuralWidths, referenceWidth);
+}
+
+function snapshotFullBleedViewportWidthFromRoot(root: HTMLElement, referenceWidth: number | null = null): number | null {
+  const fullBleedWidths: number[] = [];
+  for (const element of Array.from(root.querySelectorAll('[style]'))) {
+    const styledElement = snapshotStyledElement(root, element);
+    if (!styledElement || !hasSnapshotViewportWidthCue(styledElement)) continue;
+    const width = parseSnapshotPixelValue(styledElement.style.getPropertyValue('width').trim());
+    if (width !== null) fullBleedWidths.push(width);
+  }
+  return largestSnapshotViewportCandidate(fullBleedWidths, referenceWidth);
+}
+
+function snapshotResponsiveLayoutViewportWidthFromRoot(
+  root: HTMLElement,
+  referenceWidth: number | null = null,
+  options: { includeMaxWidth?: boolean } = {},
+): number | null {
+  const layoutWidths: number[] = [];
+  for (const element of Array.from(root.querySelectorAll('[style]'))) {
+    const htmlElement = snapshotHTMLElement(root, element);
+    if (!htmlElement || !hasSnapshotResponsiveLayoutClassCue(htmlElement)) continue;
+    const width = parseSnapshotPixelValue(htmlElement.style.getPropertyValue('width').trim());
+    if (width !== null) layoutWidths.push(width);
+    if (options.includeMaxWidth !== false) {
+      const maxWidth = parseSnapshotPixelValue(htmlElement.style.getPropertyValue('max-width').trim());
+      if (maxWidth !== null) layoutWidths.push(maxWidth);
+    }
+  }
+  return largestSnapshotViewportCandidate(layoutWidths, referenceWidth);
+}
+
+function inferSnapshotViewportWidthFromRoot(root: HTMLElement): number | null {
+  const explicitWidth = parseSnapshotViewportWidth(root.getAttribute(EDITABLE_SNAPSHOT_VIEWPORT_WIDTH_ATTR));
+  if (explicitWidth !== null) return explicitWidth;
+
+  const structuralWidths: number[] = [];
+  const fallbackWidths: number[] = [];
+  const addElementWidth = (element: HTMLElement | null, fallbackOnly = false) => {
+    if (!element) return;
+    const width = parseSnapshotPixelValue(element.style.getPropertyValue('width').trim());
+    if (width !== null) (fallbackOnly ? fallbackWidths : structuralWidths).push(width);
+    const maxWidth = parseSnapshotPixelValue(element.style.getPropertyValue('max-width').trim());
+    if (maxWidth !== null && hasSnapshotContainerClassCue(element)) fallbackWidths.push(maxWidth);
+  };
+
+  addElementWidth(root);
+  addElementWidth(snapshotBodyElement(root));
+  for (const selector of [
+    '#root, #app, #__next, #app-root, #root-app, [data-v-app]',
+    'body > header, body > main, body > footer, body > section, body > div',
+    '#root > *, #app > *, #__next > *, #app-root > *, #root-app > *',
+    'main, header, footer',
+    'main > section, main > div',
+  ]) {
+    for (const element of Array.from(root.querySelectorAll(selector))) {
+      addElementWidth(snapshotHTMLElement(root, element));
+    }
+  }
+  for (const element of Array.from(root.querySelectorAll('.container'))) {
+    addElementWidth(snapshotHTMLElement(root, element), true);
+  }
+
+  return dominantSnapshotViewportWidth(structuralWidths)
+    ?? dominantSnapshotViewportWidth(fallbackWidths);
+}
+
+function largestSnapshotViewportCandidate(widths: readonly number[], referenceWidth: number | null): number | null {
+  const minWidth = referenceWidth && referenceWidth >= MIN_DESKTOP_SNAPSHOT_VIEWPORT_WIDTH
+    ? Math.max(MIN_DESKTOP_SNAPSHOT_VIEWPORT_WIDTH, referenceWidth * 0.65)
+    : MIN_DESKTOP_SNAPSHOT_VIEWPORT_WIDTH;
+  const maxWidth = referenceWidth ? referenceWidth * 1.35 : MAX_SNAPSHOT_VIEWPORT_WIDTH;
+  let bestWidth: number | null = null;
+  for (const width of widths) {
+    const normalized = parseSnapshotViewportWidth(width);
+    if (normalized === null || normalized < minWidth || normalized > maxWidth) continue;
+    if (bestWidth === null || normalized > bestWidth) bestWidth = normalized;
+  }
+  return bestWidth;
+}
+
+function hasSnapshotViewportWidthCue(element: SnapshotStyledElement): boolean {
+  const className = String(element.getAttribute('class') ?? '');
+  if (/\b(?:w-full|w-screen|min-w-full|min-w-screen|h-screen|min-h-screen)\b/iu.test(className)) return true;
+  if (hasSnapshotFullBleedClassCue(element)) return true;
+  const position = element.style.getPropertyValue('position').trim();
+  if (position !== 'absolute' && position !== 'fixed') return false;
+  const inset = element.style.getPropertyValue('inset').trim();
+  const left = element.style.getPropertyValue('left').trim();
+  const right = element.style.getPropertyValue('right').trim();
+  return inset === '0px' || (left === '0px' && right === '0px');
+}
+
+function inferSnapshotViewportWidthFromHtml(html: string): number | null {
+  const structuralWidths = Array.from(html.matchAll(/\b(?:width)\s*:\s*(\d+(?:\.\d+)?)px/giu))
+    .map((match) => parseSnapshotViewportWidth(match[1]))
+    .filter((value): value is number => value !== null);
+  return dominantSnapshotViewportWidth(structuralWidths);
+}
+
+function dominantSnapshotViewportWidth(widths: readonly number[]): number | null {
+  const counts = new Map<number, number>();
+  for (const width of widths) {
+    const normalized = parseSnapshotViewportWidth(width);
+    if (normalized === null) continue;
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  }
+  let bestWidth: number | null = null;
+  let bestCount = 0;
+  for (const [width, count] of counts) {
+    if (count > bestCount || (count === bestCount && bestWidth !== null && width > bestWidth)) {
+      bestWidth = width;
+      bestCount = count;
+    }
+  }
+  return bestWidth;
+}
+
+function parseSnapshotPixelValue(value: string | null | undefined): number | null {
+  const match = String(value ?? '').trim().match(/^(\d+(?:\.\d+)?)px$/iu);
+  return parseSnapshotViewportWidth(match?.[1]);
+}
+
+function parseSnapshotViewportWidth(value: string | number | null | undefined): number | null {
+  const numeric = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '').trim());
+  if (!Number.isFinite(numeric) || numeric < MIN_SNAPSHOT_VIEWPORT_WIDTH || numeric > MAX_SNAPSHOT_VIEWPORT_WIDTH) {
+    return null;
+  }
+  return Math.round(numeric);
+}
+
 function normalizeFrozenSnapshotState(document: Document, clone: HTMLElement): void {
   const win = document.defaultView;
   if (!win) return;
@@ -863,114 +1112,25 @@ function normalizeSnapshotMediaPlayback(root: HTMLElement): boolean {
   return changed;
 }
 
-function normalizeSnapshotShellWidth(root: HTMLElement): boolean {
-  const targets = new Set<HTMLElement>([root]);
-  const body = snapshotBodyElement(root);
-  if (body) {
-    targets.add(body);
-    addBodyLevelSnapshotShellTargets(root, body, targets);
-  }
-  for (const element of Array.from(root.querySelectorAll('#root, #app, #__next, #app-root, #root-app, [data-v-app]'))) {
-    const htmlElement = snapshotHTMLElement(root, element);
-    if (!htmlElement || !isAppMountElement(htmlElement)) continue;
-    targets.add(htmlElement);
-    if (isBodyLevelSnapshotShellElement(htmlElement)) {
-      addDirectSnapshotShellChildTargets(root, htmlElement, targets);
-    }
-  }
-
-  let changed = false;
-  for (const target of targets) {
-    changed = normalizeSnapshotShellElementWidth(target) || changed;
-  }
-  return changed;
+function hasSnapshotFullBleedClassCue(element: Element): boolean {
+  return /(?:^|\s)(?:inset-0|inset-x-0|left-0|right-0)(?:\s|$)/u.test(String(element.getAttribute('class') ?? ''));
 }
 
-function addBodyLevelSnapshotShellTargets(
-  root: HTMLElement,
-  body: HTMLElement,
-  targets: Set<HTMLElement>,
-): void {
-  for (const child of Array.from(body.children)) {
-    const childElement = snapshotHTMLElement(root, child);
-    if (!childElement || !isBodyLevelSnapshotShellElement(childElement)) continue;
-    targets.add(childElement);
-    addDirectSnapshotShellChildTargets(root, childElement, targets);
-  }
+function hasSnapshotResponsiveLayoutClassCue(element: HTMLElement): boolean {
+  const className = String(element.getAttribute('class') ?? '');
+  return hasSnapshotContainerClassCue(element)
+    || (
+      hasSnapshotAutoMarginClassCue(element)
+      && /(?:^|\s)max-w-\S+(?:\s|$)/iu.test(className)
+    );
 }
 
-function addDirectSnapshotShellChildTargets(
-  root: HTMLElement,
-  shell: HTMLElement,
-  targets: Set<HTMLElement>,
-): void {
-  for (const child of Array.from(shell.children)) {
-    const childElement = snapshotHTMLElement(root, child);
-    if (!childElement || !isDirectSnapshotShellChildElement(childElement)) continue;
-    targets.add(childElement);
-  }
+function hasSnapshotAutoMarginClassCue(element: HTMLElement): boolean {
+  return /(?:^|\s)(?:mx-auto|m-auto)(?:\s|$)/u.test(String(element.getAttribute('class') ?? ''));
 }
 
-function isBodyLevelSnapshotShellElement(element: HTMLElement): boolean {
-  if (!hasSnapshotPixelWidth(element) || !isVisibleSnapshotElement(element)) return false;
-  const tagName = element.tagName.toUpperCase();
-  if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'NEXT-ROUTE-ANNOUNCER'].includes(tagName)) return false;
-  if (['ABSOLUTE', 'FIXED'].includes(element.style.getPropertyValue('position').trim().toUpperCase())) return false;
-  return isAppMountElement(element)
-    || tagName === 'MAIN'
-    || hasSnapshotShellClassCue(element);
-}
-
-function isDirectSnapshotShellChildElement(element: HTMLElement): boolean {
-  if (!hasSnapshotPixelWidth(element) || !isVisibleSnapshotElement(element)) return false;
-  const tagName = element.tagName.toUpperCase();
-  return ['HEADER', 'MAIN', 'FOOTER'].includes(tagName)
-    || hasSnapshotFullBleedClassCue(element);
-}
-
-function hasSnapshotShellClassCue(element: HTMLElement): boolean {
-  return /(?:^|\s)(?:h-screen|min-h-screen|isolate|overflow-x-clip|w-full)(?:\s|$)/u.test(String(element.className ?? ''));
-}
-
-function hasSnapshotFullBleedClassCue(element: HTMLElement): boolean {
-  return /(?:^|\s)(?:inset-x-0|left-0|right-0)(?:\s|$)/u.test(String(element.className ?? ''));
-}
-
-function hasSnapshotPixelWidth(element: HTMLElement): boolean {
-  return isPixelCssValue(element.style.getPropertyValue('width').trim());
-}
-
-function isVisibleSnapshotElement(element: HTMLElement): boolean {
-  return element.style.getPropertyValue('display').trim().toLowerCase() !== 'none';
-}
-
-function normalizeSnapshotShellElementWidth(element: HTMLElement): boolean {
-  let changed = false;
-  const width = element.style.getPropertyValue('width').trim();
-  if (isPixelCssValue(width)) {
-    element.style.setProperty('width', '100%');
-    changed = true;
-  }
-  const maxWidth = element.style.getPropertyValue('max-width').trim();
-  if (isPositivePixelCssValue(maxWidth)) {
-    element.style.setProperty('max-width', 'none');
-    changed = true;
-  }
-  const minWidth = element.style.getPropertyValue('min-width').trim();
-  if (isPositivePixelCssValue(minWidth)) {
-    element.style.setProperty('min-width', '0px');
-    changed = true;
-  }
-  return changed;
-}
-
-function isPixelCssValue(value: string): boolean {
-  return /^\d+(?:\.\d+)?px$/iu.test(value);
-}
-
-function isPositivePixelCssValue(value: string): boolean {
-  if (!isPixelCssValue(value)) return false;
-  return Number.parseFloat(value) > 0;
+function hasSnapshotContainerClassCue(element: HTMLElement): boolean {
+  return /(?:^|\s)container(?:\s|$)/u.test(String(element.getAttribute('class') ?? ''));
 }
 
 function snapshotHTMLElement(root: HTMLElement, element: Element | null): HTMLElement | null {
@@ -979,6 +1139,18 @@ function snapshotHTMLElement(root: HTMLElement, element: Element | null): HTMLEl
   if (win) return element instanceof win.HTMLElement ? element : null;
   if (!('style' in element) || typeof element.tagName !== 'string') return null;
   return element as HTMLElement;
+}
+
+function snapshotStyledElement(root: HTMLElement, element: Element | null): SnapshotStyledElement | null {
+  if (!element) return null;
+  const win = root.ownerDocument.defaultView;
+  if (win) {
+    return element instanceof win.HTMLElement || element instanceof win.SVGElement
+      ? element
+      : null;
+  }
+  if (!('style' in element) || typeof element.tagName !== 'string') return null;
+  return element as SnapshotStyledElement;
 }
 
 function snapshotBodyElement(root: HTMLElement): HTMLElement | null {
