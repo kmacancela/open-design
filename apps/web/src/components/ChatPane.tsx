@@ -34,7 +34,11 @@ import type { SettingsSection } from './SettingsDialog';
 import {
   buildEditableSnapshotHtml,
   editableSnapshotFileName,
+  isEditableSnapshotRevisionFileName,
   isReusableEditableSnapshotHtml,
+  latestEditableSnapshotFileName,
+  nextEditableSnapshotFileName,
+  repairEditableSnapshotResourceUrls,
 } from '../runtime/editable-snapshot';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
@@ -241,6 +245,7 @@ function ImportedProjectSurfaces({
   projectId,
   surfaces,
   files,
+  activeProjectFileName,
   previewStates,
   onOpenFile,
   onOpenEditableSurface,
@@ -249,6 +254,7 @@ function ImportedProjectSurfaces({
   projectId: string | null;
   surfaces: ProjectUiSurface[];
   files: ProjectFile[];
+  activeProjectFileName?: string | null;
   previewStates: ImportedSurfacePreviewStates;
   onOpenFile?: (name: string) => void;
   onOpenEditableSurface?: (request: ImportedSurfaceEditableSnapshotRequest) => void | Promise<void>;
@@ -266,25 +272,55 @@ function ImportedProjectSurfaces({
       onOpenFile?.(surface.previewFile);
       return;
     }
-    const fileName = editableSnapshotFileName(surface);
-    if (fileByName.has(fileName)) {
-      const existingSnapshot = fileByName.get(fileName) ?? null;
+    const baseFileName = editableSnapshotFileName(surface);
+    const existingFileNames = files.map((file) => file.name);
+    const activeSnapshotFileName = activeProjectFileName
+      && fileByName.has(activeProjectFileName)
+      && isEditableSnapshotRevisionFileName(baseFileName, activeProjectFileName)
+      ? activeProjectFileName
+      : null;
+    const sourceSnapshotFileName =
+      activeSnapshotFileName ?? latestEditableSnapshotFileName(baseFileName, existingFileNames);
+    const fileName = sourceSnapshotFileName
+      ? nextEditableSnapshotFileName(baseFileName, existingFileNames)
+      : baseFileName;
+    if (sourceSnapshotFileName) {
+      const existingSnapshot = fileByName.get(sourceSnapshotFileName) ?? null;
       const snapshotText = projectId
-        ? await fetchProjectFileText(projectId, fileName, {
+        ? await fetchProjectFileText(projectId, sourceSnapshotFileName, {
           cache: 'no-store',
           cacheBustKey: existingSnapshot?.mtime ?? Date.now(),
         })
         : null;
       if (isReusableEditableSnapshotHtml(snapshotText)) {
-        await onOpenEditableSurface?.({ fileName });
-        return;
+        const repairedSnapshotText = projectId
+          ? repairEditableSnapshotResourceUrls(snapshotText, surface, {
+            baseUrl: typeof window === 'undefined' ? null : window.location.href,
+            projectId,
+            projectFileNames: files
+              .filter((file) => file.type !== 'dir')
+              .map((file) => file.name),
+          })
+          : snapshotText;
+        const snapshotHtml = repairedSnapshotText ?? snapshotText;
+        if (snapshotHtml) {
+          await onOpenEditableSurface?.({ fileName, html: snapshotHtml });
+          return;
+        }
       }
     }
     const frame = liveFrameRefs.current.get(surface.id);
     let html: string | null = null;
     try {
       html = frame?.contentDocument
-        ? buildEditableSnapshotHtml(frame.contentDocument, surface)
+        ? buildEditableSnapshotHtml(frame.contentDocument, surface, projectId
+          ? {
+            projectId,
+            projectFileNames: files
+              .filter((file) => file.type !== 'dir')
+              .map((file) => file.name),
+          }
+          : {})
         : null;
     } catch {
       html = null;
@@ -494,7 +530,6 @@ function SurfaceLivePreviewFrame({
             <Icon name="file-code" size={28} />
           </span>
           <span>Starting preview</span>
-          <small>Preparing the screen</small>
         </span>
       </div>
     </div>
@@ -555,6 +590,7 @@ function SurfacePreviewFallback({
   previewState?: ProjectUiPreviewRuntimeResponse;
 }) {
   const isStarting = previewState?.status === 'starting';
+  const detail = surfacePreviewDetail(surface, previewState);
   return (
     <span className="chat-ui-surface-preview-fallback">
       {isStarting ? (
@@ -565,7 +601,7 @@ function SurfacePreviewFallback({
         <Icon name={surface.kind === 'static-html' ? 'file-code' : 'file'} size={28} />
       )}
       <span>{surfacePreviewShortLabel(surface.previewStatus, previewState?.status)}</span>
-      <small>{surfacePreviewDetail(surface, previewState)}</small>
+      {detail ? <small>{detail}</small> : null}
     </span>
   );
 }
@@ -706,8 +742,8 @@ function surfacePreviewShortLabel(
 function surfacePreviewDetail(
   surface: ProjectUiSurface,
   previewState?: ProjectUiPreviewRuntimeResponse,
-): string {
-  if (previewState?.status === 'starting') return 'Preparing the screen';
+): string | null {
+  if (previewState?.status === 'starting') return null;
   if (previewState?.status === 'failed') return previewState.error ?? 'Could not start the app runtime';
   if (previewState?.status === 'needs-setup') return previewState.error ?? 'Install dependencies before previewing';
   if (previewState?.status === 'unsupported') return previewState.error ?? 'No app runtime was found';
@@ -1768,6 +1804,7 @@ export function ChatPane({
                       projectId={projectId}
                       surfaces={importedProjectSurfacesState.surfaces}
                       files={projectFiles}
+                      activeProjectFileName={activeProjectFileName}
                       previewStates={importedSurfacePreviewStates}
                       onOpenFile={onRequestOpenFile}
                       onOpenEditableSurface={onOpenEditableSurface}

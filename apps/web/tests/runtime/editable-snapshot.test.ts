@@ -5,8 +5,12 @@ import { describe, expect, it } from 'vitest';
 import {
   buildEditableSnapshotHtml,
   editableSnapshotFileName,
+  isEditableSnapshotRevisionFileName,
   isRejectedEditableSnapshotHtml,
   isReusableEditableSnapshotHtml,
+  latestEditableSnapshotFileName,
+  nextEditableSnapshotFileName,
+  repairEditableSnapshotResourceUrls,
 } from '../../src/runtime/editable-snapshot';
 import type { ProjectUiSurface } from '../../src/types';
 
@@ -38,6 +42,29 @@ function surface(overrides: Partial<ProjectUiSurface> = {}): ProjectUiSurface {
 describe('editable snapshots', () => {
   it('uses a stable generated HTML file name for a discovered surface', () => {
     expect(editableSnapshotFileName(surface())).toBe('design-snapshots/messages.html');
+  });
+
+  it('allocates revision file names without overwriting saved editable snapshots', () => {
+    expect(nextEditableSnapshotFileName('design-snapshots/messages.html', [])).toBe(
+      'design-snapshots/messages.html',
+    );
+    expect(nextEditableSnapshotFileName('design-snapshots/messages.html', [
+      'design-snapshots/messages.html',
+      'design-snapshots/messages-2.html',
+    ])).toBe('design-snapshots/messages-3.html');
+    expect(latestEditableSnapshotFileName('design-snapshots/messages.html', [
+      'design-snapshots/messages.html',
+      'design-snapshots/messages-2.html',
+      'design-snapshots/other.html',
+    ])).toBe('design-snapshots/messages-2.html');
+    expect(isEditableSnapshotRevisionFileName(
+      'design-snapshots/messages.html',
+      'design-snapshots/messages-2.html',
+    )).toBe(true);
+    expect(isEditableSnapshotRevisionFileName(
+      'design-snapshots/messages.html',
+      'design-snapshots/messages-extra.html',
+    )).toBe(false);
   });
 
   it('serializes the rendered page as script-free editable HTML', () => {
@@ -143,6 +170,315 @@ describe('editable snapshots', () => {
     expect(html).toMatch(/<a\b[^>]*style="[^"]*color: rgb\(255, 255, 255\)/);
     expect(html).toMatch(/<button\b[^>]*style="[^"]*background: rgba\(255, 255, 255, 0\.24\)/);
     expect(isReusableEditableSnapshotHtml(html)).toBe(true);
+  });
+
+  it('rebases local media URLs to stable project raw URLs for saved mockups', () => {
+    document.documentElement.innerHTML = `
+      <head>
+        <base href="/api/projects/project-1/ui-preview/proxy/token/">
+      </head>
+      <body>
+        <main
+          style="
+            min-height: 100vh;
+            background-image: url('/assets/hero image.jpg');
+            background-size: cover;
+            color: rgb(255, 255, 255);
+          "
+        >
+          <img src="/assets/logo mark.png" alt="Logo">
+          <video poster="/media/poster.jpg" autoplay>
+            <source src="/media/intro video.mp4" type="video/mp4">
+          </video>
+        </main>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface({
+      previewRuntimeRoot: 'apps/web',
+    }), {
+      projectId: 'project-1',
+      projectFileNames: [
+        'apps/web/public/assets/hero image.jpg',
+        'apps/web/public/assets/logo mark.png',
+        'apps/web/public/media/poster.jpg',
+        'apps/web/public/media/intro video.mp4',
+      ],
+    });
+
+    expect(html).toContain('/api/projects/project-1/raw/apps/web/public/assets/hero%20image.jpg');
+    expect(html).toContain('src="/api/projects/project-1/raw/apps/web/public/assets/logo%20mark.png"');
+    expect(html).toContain('poster="/api/projects/project-1/raw/apps/web/public/media/poster.jpg"');
+    expect(html).toContain('src="/api/projects/project-1/raw/apps/web/public/media/intro%20video.mp4"');
+    expect(html).toMatch(/<video\b[^>]*muted=""/iu);
+    expect(html).toMatch(/<video\b[^>]*playsinline=""/iu);
+    expect(html).not.toContain('autoplay');
+    expect(isReusableEditableSnapshotHtml(html)).toBe(true);
+  });
+
+  it('leaves external and unmatched media URLs untouched while rebasing known local srcsets', () => {
+    document.documentElement.innerHTML = `
+      <head>
+        <base href="/api/projects/project-1/ui-preview/proxy/token/">
+      </head>
+      <body>
+        <main style="display: grid; color: rgb(255, 255, 255);">
+          <img src="https://cdn.example.com/logo.png" alt="External">
+          <img src="/missing.png" alt="Missing">
+          <img
+            src="/assets/fallback.png"
+            srcset="/assets/card-small.png 1x, /assets/card-large.png 2x"
+            alt="Cards"
+          >
+        </main>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface({
+      previewRuntimeRoot: 'apps/web',
+    }), {
+      projectId: 'project-1',
+      projectFileNames: [
+        'apps/web/public/assets/fallback.png',
+        'apps/web/public/assets/card-small.png',
+        'apps/web/public/assets/card-large.png',
+      ],
+    });
+
+    expect(html).toContain('https://cdn.example.com/logo.png');
+    expect(html).toContain('/missing.png');
+    expect(html).not.toContain('/api/projects/project-1/raw/missing.png');
+    expect(html).toContain('/api/projects/project-1/raw/apps/web/public/assets/fallback.png');
+    expect(html).toContain('/api/projects/project-1/raw/apps/web/public/assets/card-small.png 1x');
+    expect(html).toContain('/api/projects/project-1/raw/apps/web/public/assets/card-large.png 2x');
+  });
+
+  it('preserves local font-face rules with stable project raw URLs', () => {
+    document.documentElement.innerHTML = `
+      <head>
+        <base href="/api/projects/project-1/ui-preview/proxy/token/">
+        <style>
+          @font-face {
+            font-family: "Kary";
+            src: url("/assets/fonts/kary.woff2") format("woff2");
+            font-weight: 400;
+          }
+        </style>
+      </head>
+      <body>
+        <main style="display: block; color: rgb(255, 255, 255); font-family: Kary, serif;">
+          Where fashion is made.
+        </main>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface({
+      previewRuntimeRoot: 'apps/web',
+    }), {
+      projectId: 'project-1',
+      projectFileNames: [
+        'apps/web/public/assets/fonts/kary.woff2',
+      ],
+    });
+
+    expect(html).toContain('data-od-snapshot-fonts="true"');
+    expect(html).toContain('@font-face');
+    expect(html).toContain('/api/projects/project-1/raw/apps/web/public/assets/fonts/kary.woff2');
+    expect(isReusableEditableSnapshotHtml(html)).toBe(true);
+  });
+
+  it('rebases local dev-server filesystem media URLs by project file suffix', () => {
+    document.documentElement.innerHTML = `
+      <head>
+        <base href="http://127.0.0.1:5173/">
+      </head>
+      <body>
+        <main style="display: block; color: rgb(255, 255, 255);">
+          <img
+            src="http://127.0.0.1:5173/@fs/Users/karina/site/src/assets/hero.jpg"
+            alt="Hero"
+          >
+        </main>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface(), {
+      projectId: 'project-1',
+      projectFileNames: [
+        'src/assets/hero.jpg',
+      ],
+    });
+
+    expect(html).toContain('src="/api/projects/project-1/raw/src/assets/hero.jpg"');
+    expect(html).not.toContain('@fs/Users/karina/site/src/assets/hero.jpg');
+    expect(isReusableEditableSnapshotHtml(html)).toBe(true);
+  });
+
+  it('repairs saved snapshot media URLs without replacing edited content', () => {
+    const editedSnapshot = `<!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block;">
+        <head>
+          <title>Edited mockup</title>
+          <style>
+            .hero { background-image: url("/assets/hero.jpg"); }
+          </style>
+        </head>
+        <body style="display: block;">
+          <main style="display: block; color: rgb(255, 255, 255);">
+            <h1 style="display: block;">Edited headline that must stay</h1>
+            <img src="/assets/logo.png" alt="Logo" style="display: block;">
+            <video src="/assets/loop.mp4" autoplay style="display: block;"></video>
+            <audio src="/assets/theme.mp3" autoplay style="display: block;"></audio>
+          </main>
+        </body>
+      </html>`;
+
+    const repaired = repairEditableSnapshotResourceUrls(editedSnapshot, surface({
+      previewRuntimeRoot: 'apps/web',
+    }), {
+      baseUrl: 'http://127.0.0.1:50545/projects/project-1/conversations/c/files/design-snapshots/home.html',
+      projectId: 'project-1',
+      projectFileNames: [
+        'apps/web/public/assets/hero.jpg',
+        'apps/web/public/assets/logo.png',
+        'apps/web/public/assets/loop.mp4',
+        'apps/web/public/assets/theme.mp3',
+      ],
+    });
+
+    expect(repaired).toContain('Edited headline that must stay');
+    expect(repaired).toContain('/api/projects/project-1/raw/apps/web/public/assets/hero.jpg');
+    expect(repaired).toContain('src="/api/projects/project-1/raw/apps/web/public/assets/logo.png"');
+    expect(repaired).toContain('src="/api/projects/project-1/raw/apps/web/public/assets/loop.mp4"');
+    expect(repaired).toContain('src="/api/projects/project-1/raw/apps/web/public/assets/theme.mp3"');
+    expect(repaired).toMatch(/<video\b[^>]*muted=""/iu);
+    expect(repaired).toMatch(/<video\b[^>]*playsinline=""/iu);
+    expect(repaired).toMatch(/<audio\b[^>]*muted=""/iu);
+    expect(repaired).not.toContain('autoplay');
+    expect(isReusableEditableSnapshotHtml(repaired)).toBe(true);
+  });
+
+  it('normalizes snapshot shell widths without changing fixed inner components', () => {
+    document.documentElement.setAttribute(
+      'style',
+      'display: block; width: 1280px; max-width: 1280px; min-width: 1280px;',
+    );
+    document.documentElement.innerHTML = `
+      <head><title>Runtime app</title></head>
+      <body style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+        <div id="root" style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+          <main class="root-main" style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+            <section class="card" style="display: block; width: 420px;">Client form</section>
+          </main>
+        </div>
+        <div class="relative isolate min-h-screen overflow-x-clip" style="display: block; position: relative; width: 1280px; max-width: 1280px; min-width: 1280px;">
+          <div class="pointer-events-none absolute inset-x-0 top-0" style="display: block; position: absolute; width: 1280px; max-width: 1280px;"></div>
+          <header style="display: block; width: 1280px; max-width: 1280px;">Header</header>
+          <main class="page-main" style="display: block; width: 1280px; max-width: 1280px;">
+            <div class="mx-auto max-w-7xl" style="display: block; width: 1216px; max-width: 1280px;">Content rail</div>
+            <section class="fixed-panel" style="display: block; width: 480px;">Fixed panel</section>
+          </main>
+          <footer style="display: block; width: 1280px; max-width: 1280px;">Footer</footer>
+        </div>
+      </body>
+    `;
+
+    const html = buildEditableSnapshotHtml(document, surface());
+    expect(html).not.toBeNull();
+    const generatedDocument = new DOMParser().parseFromString(html!, 'text/html');
+    const generatedRoot = generatedDocument.querySelector('#root') as HTMLElement;
+    const generatedRootMain = generatedDocument.querySelector('.root-main') as HTMLElement;
+    const generatedCard = generatedDocument.querySelector('.card') as HTMLElement;
+    const generatedShell = generatedDocument.querySelector('.min-h-screen') as HTMLElement;
+    const generatedBackground = generatedDocument.querySelector('.inset-x-0') as HTMLElement;
+    const generatedHeader = generatedDocument.querySelector('header') as HTMLElement;
+    const generatedPageMain = generatedDocument.querySelector('.page-main') as HTMLElement;
+    const generatedFooter = generatedDocument.querySelector('footer') as HTMLElement;
+    const generatedContentRail = generatedDocument.querySelector('.max-w-7xl') as HTMLElement;
+    const generatedFixedPanel = generatedDocument.querySelector('.fixed-panel') as HTMLElement;
+
+    expect(generatedDocument.documentElement.style.width).toBe('100%');
+    expect(generatedDocument.documentElement.style.maxWidth).toBe('none');
+    expect(generatedDocument.documentElement.style.minWidth).toBe('0px');
+    expect(generatedDocument.body.style.width).toBe('100%');
+    expect(generatedDocument.body.style.maxWidth).toBe('none');
+    expect(generatedDocument.body.style.minWidth).toBe('0px');
+    expect(generatedRoot.style.width).toBe('100%');
+    expect(generatedRoot.style.maxWidth).toBe('none');
+    expect(generatedRoot.style.minWidth).toBe('0px');
+    expect(generatedRootMain.style.width).toBe('100%');
+    expect(generatedRootMain.style.maxWidth).toBe('none');
+    expect(generatedRootMain.style.minWidth).toBe('0px');
+    expect(generatedCard.style.width).toBe('420px');
+    expect(generatedShell.style.width).toBe('100%');
+    expect(generatedShell.style.maxWidth).toBe('none');
+    expect(generatedShell.style.minWidth).toBe('0px');
+    expect(generatedBackground.style.width).toBe('100%');
+    expect(generatedBackground.style.maxWidth).toBe('none');
+    expect(generatedHeader.style.width).toBe('100%');
+    expect(generatedHeader.style.maxWidth).toBe('none');
+    expect(generatedPageMain.style.width).toBe('100%');
+    expect(generatedPageMain.style.maxWidth).toBe('none');
+    expect(generatedFooter.style.width).toBe('100%');
+    expect(generatedFooter.style.maxWidth).toBe('none');
+    expect(generatedContentRail.style.width).toBe('1216px');
+    expect(generatedContentRail.style.maxWidth).toBe('1280px');
+    expect(generatedFixedPanel.style.width).toBe('480px');
+
+    const repaired = repairEditableSnapshotResourceUrls(`
+      <!doctype html>
+      <html data-od-editable-snapshot="true" style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+        <body style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+          <div id="root" style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+            <main class="root-main" style="display: block; width: 1280px; max-width: 1280px; min-width: 1280px;">
+              <section class="card" style="display: block; width: 420px;">Edited form copy</section>
+            </main>
+          </div>
+          <div class="relative isolate min-h-screen overflow-x-clip" style="display: block; position: relative; width: 1280px; max-width: 1280px; min-width: 1280px;">
+            <div class="pointer-events-none absolute inset-x-0 top-0" style="display: block; position: absolute; width: 1280px; max-width: 1280px;"></div>
+            <header style="display: block; width: 1280px; max-width: 1280px;">Edited header</header>
+            <main class="page-main" style="display: block; width: 1280px; max-width: 1280px;">
+              <div class="mx-auto max-w-7xl" style="display: block; width: 1216px; max-width: 1280px;">Edited rail</div>
+              <section class="fixed-panel" style="display: block; width: 480px;">Edited fixed panel</section>
+            </main>
+            <footer style="display: block; width: 1280px; max-width: 1280px;">Edited footer</footer>
+          </div>
+        </body>
+      </html>
+    `, surface());
+    expect(repaired).toContain('Edited form copy');
+    expect(repaired).toContain('Edited fixed panel');
+    const repairedDocument = new DOMParser().parseFromString(repaired!, 'text/html');
+    const repairedRoot = repairedDocument.querySelector('#root') as HTMLElement;
+    const repairedRootMain = repairedDocument.querySelector('.root-main') as HTMLElement;
+    const repairedCard = repairedDocument.querySelector('.card') as HTMLElement;
+    const repairedShell = repairedDocument.querySelector('.min-h-screen') as HTMLElement;
+    const repairedPageMain = repairedDocument.querySelector('.page-main') as HTMLElement;
+    const repairedContentRail = repairedDocument.querySelector('.max-w-7xl') as HTMLElement;
+    const repairedFixedPanel = repairedDocument.querySelector('.fixed-panel') as HTMLElement;
+
+    expect(repairedDocument.documentElement.style.width).toBe('100%');
+    expect(repairedDocument.documentElement.style.maxWidth).toBe('none');
+    expect(repairedDocument.documentElement.style.minWidth).toBe('0px');
+    expect(repairedDocument.body.style.width).toBe('100%');
+    expect(repairedDocument.body.style.maxWidth).toBe('none');
+    expect(repairedDocument.body.style.minWidth).toBe('0px');
+    expect(repairedRoot.style.width).toBe('100%');
+    expect(repairedRoot.style.maxWidth).toBe('none');
+    expect(repairedRoot.style.minWidth).toBe('0px');
+    expect(repairedRootMain.style.width).toBe('100%');
+    expect(repairedRootMain.style.maxWidth).toBe('none');
+    expect(repairedRootMain.style.minWidth).toBe('0px');
+    expect(repairedCard.style.width).toBe('420px');
+    expect(repairedShell.style.width).toBe('100%');
+    expect(repairedShell.style.maxWidth).toBe('none');
+    expect(repairedShell.style.minWidth).toBe('0px');
+    expect(repairedPageMain.style.width).toBe('100%');
+    expect(repairedPageMain.style.maxWidth).toBe('none');
+    expect(repairedContentRail.style.width).toBe('1216px');
+    expect(repairedContentRail.style.maxWidth).toBe('1280px');
+    expect(repairedFixedPanel.style.width).toBe('480px');
+    expect(isReusableEditableSnapshotHtml(repaired)).toBe(true);
   });
 
   it('normalizes runtime reveal and intro animation states for static editing', () => {

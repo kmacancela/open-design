@@ -277,9 +277,183 @@ describe('ChatPane imported folder surfaces', () => {
     fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
     await waitFor(() => {
       expect(onOpenEditableSurface).toHaveBeenCalledWith({
-        fileName: 'design-snapshots/messages.html',
+        fileName: 'design-snapshots/messages-2.html',
+        html: expect.stringContaining('Existing edit'),
       });
     });
+  });
+
+  it('forks an existing editable snapshot while repairing media URLs', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    const onOpenEditableSurface = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: ['public/assets/logo.png'],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages.html')) {
+        return html(`<!doctype html>
+          <html data-od-editable-snapshot="true" style="color: rgb(1, 2, 3);">
+            <body style="font-family: Inter;">
+              <main style="display: grid; color: rgb(1, 2, 3);">
+                <h1 style="display: block;">Existing edited headline</h1>
+                <img src="/assets/logo.png" alt="Logo">
+              </main>
+            </body>
+          </html>`);
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+        file('public/assets/logo.png', 'image', 16),
+        file('design-snapshots/messages.html', 'html', 30),
+      ],
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface,
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledWith({
+        fileName: 'design-snapshots/messages-2.html',
+        html: expect.stringContaining('Existing edited headline'),
+      });
+    });
+    expect(onOpenEditableSurface.mock.calls[0]?.[0]?.html ?? '').toContain(
+      '/api/projects/project-1/raw/public/assets/logo.png',
+    );
+  });
+
+  it('forks from the active editable snapshot revision when one is open', async () => {
+    const metadata: ProjectMetadata = {
+      kind: 'prototype',
+      importedFrom: 'folder',
+      entryFile: 'app/page.tsx',
+    };
+    const onOpenEditableSurface = vi.fn();
+    const fetchMock = vi.fn(async (url, init) => {
+      if (typeof url === 'string' && url.includes('/ui-surfaces')) {
+        return json({
+          surfaces: [
+            {
+              id: 'messages',
+              label: 'Messages screen',
+              route: '/messages/:conversationId',
+              kind: 'next-route',
+              confidence: 'high',
+              framework: 'Next.js',
+              entryFile: 'app/messages/[conversationId]/page.tsx',
+              previewFile: null,
+              previewRuntimeRoot: '',
+              previewPath: '/messages/preview',
+              previewStatus: 'source-mapped',
+              sourceFiles: ['app/messages/[conversationId]/page.tsx'],
+              styleFiles: ['app/globals.css'],
+              scriptFiles: [],
+              assetFiles: [],
+              fontFiles: [],
+              externalDependencies: [
+                { packageName: 'next', importPath: 'next', kind: 'runtime' },
+              ],
+              reasons: ['Next.js route file detected'],
+              mtime: 20,
+            },
+          ],
+          generatedAt: '2026-06-02T00:00:00.000Z',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/ui-preview')) {
+        expect(init).toEqual(expect.objectContaining({ method: 'POST' }));
+        return json({
+          status: 'ready',
+          runtimeRoot: '',
+          baseUrl: '/api/projects/project-1/ui-preview/proxy/proxy-token',
+          url: '/api/projects/project-1/ui-preview/proxy/proxy-token/messages/preview',
+          upstreamBaseUrl: 'http://127.0.0.1:43210',
+          route: '/messages/preview',
+        });
+      }
+      if (typeof url === 'string' && url.includes('/raw/design-snapshots/messages-2.html')) {
+        return html('<!doctype html><html data-od-editable-snapshot="true" style="display: block;"><body style="display: block;"><main style="display: grid;">Second saved edit</main></body></html>');
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPane({
+      projectMetadata: metadata,
+      projectFiles: [
+        file('app/messages/[conversationId]/page.tsx', 'code', 20),
+        file('app/globals.css', 'code', 18),
+        file('design-snapshots/messages.html', 'html', 30),
+        file('design-snapshots/messages-2.html', 'html', 31),
+      ],
+      activeProjectFileName: 'design-snapshots/messages-2.html',
+      onRequestOpenFile: vi.fn(),
+      onOpenEditableSurface,
+    });
+
+    const surface = await screen.findByTestId('chat-ui-surface-0');
+    fireEvent.click(within(surface).getByRole('button', { name: 'Edit design' }));
+
+    await waitFor(() => {
+      expect(onOpenEditableSurface).toHaveBeenCalledWith({
+        fileName: 'design-snapshots/messages-3.html',
+        html: expect.stringContaining('Second saved edit'),
+      });
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/raw/design-snapshots/messages-2.html'),
+      expect.any(Object),
+    );
   });
 
   it('keeps a runtime preview covered until the iframe finishes loading', async () => {
@@ -362,7 +536,7 @@ describe('ChatPane imported folder surfaces', () => {
     });
   });
 
-  it('regenerates an existing editable snapshot when it contains a proxy error', async () => {
+  it('forks a fresh editable snapshot when the existing snapshot contains a proxy error', async () => {
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -453,13 +627,13 @@ describe('ChatPane imported folder surfaces', () => {
 
     await waitFor(() => {
       expect(onOpenEditableSurface).toHaveBeenCalledWith({
-        fileName: 'design-snapshots/messages.html',
+        fileName: 'design-snapshots/messages-2.html',
         html: expect.stringContaining('Recovered runtime headline'),
       });
     });
   });
 
-  it('regenerates an existing editable snapshot when generated inline style coverage is incomplete', async () => {
+  it('forks a fresh editable snapshot when the existing snapshot style coverage is incomplete', async () => {
     const metadata: ProjectMetadata = {
       kind: 'prototype',
       importedFrom: 'folder',
@@ -557,7 +731,7 @@ describe('ChatPane imported folder surfaces', () => {
 
     await waitFor(() => {
       expect(onOpenEditableSurface).toHaveBeenCalledWith({
-        fileName: 'design-snapshots/messages.html',
+        fileName: 'design-snapshots/messages-2.html',
         html: expect.stringContaining('Styled runtime headline'),
       });
     });
@@ -925,7 +1099,8 @@ describe('ChatPane imported folder surfaces', () => {
     });
     const surface = screen.getByTestId('chat-ui-surface-0');
     expect(surface.getAttribute('data-preview-status')).toBe('starting');
-    expect(within(surface).getByText('Preparing the screen')).toBeTruthy();
+    expect(surface.querySelector('.chat-ui-surface-preview-fallback')?.textContent).toContain('Starting preview');
+    expect(within(surface).queryByText('Preparing the screen')).toBeNull();
     expect(surface.querySelector('.chat-ui-surface-scan-icon')).toBeTruthy();
 
     await act(async () => {

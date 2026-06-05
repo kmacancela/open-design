@@ -3,6 +3,9 @@ import type { ProjectUiSurface } from '../types';
 const EDITABLE_SNAPSHOT_DIR = 'design-snapshots';
 const MIN_STYLED_SNAPSHOT_DESCENDANT_RATIO = 0.45;
 const MIN_RICH_STYLED_SNAPSHOT_DESCENDANTS = 4;
+const PROJECT_PUBLIC_DIR = 'public';
+const PROJECT_RESOURCE_FILE_EXTENSION_RE = /\.(?:avif|bmp|css|eot|gif|ico|jpe?g|m4a|m4v|mov|mp3|mp4|oga|ogg|ogv|otf|png|svg|ttf|wav|webm|webp|woff2?)$/iu;
+const CSS_FONT_FACE_RULE_TYPE = 5;
 const SNAPSHOT_STYLE_PROPERTIES = [
   'background',
   'background-color',
@@ -94,6 +97,19 @@ const SNAPSHOT_STYLE_PROPERTIES = [
   '-webkit-font-smoothing',
 ] as const;
 
+export interface EditableSnapshotBuildOptions {
+  baseUrl?: string | null;
+  projectId?: string | null;
+  projectFileNames?: readonly string[] | null;
+}
+
+type ResourceUrlRebaser = (value: string) => string | null;
+
+interface ProjectFileLookup {
+  exact: Map<string, string>;
+  suffix: Map<string, string>;
+}
+
 export function editableSnapshotFileName(surface: ProjectUiSurface): string {
   const slug = slugifySnapshotName(surface.id)
     || slugifySnapshotName(surface.label)
@@ -103,9 +119,55 @@ export function editableSnapshotFileName(surface: ProjectUiSurface): string {
   return `${EDITABLE_SNAPSHOT_DIR}/${slug}.html`;
 }
 
+export function nextEditableSnapshotFileName(
+  baseFileName: string,
+  existingFileNames: Iterable<string>,
+): string {
+  const existing = new Set(existingFileNames);
+  if (!existing.has(baseFileName)) return baseFileName;
+
+  const lastSlashIndex = baseFileName.lastIndexOf('/');
+  const lastDotIndex = baseFileName.lastIndexOf('.');
+  const extensionIndex = lastDotIndex > lastSlashIndex ? lastDotIndex : baseFileName.length;
+  const stem = baseFileName.slice(0, extensionIndex);
+  const extension = baseFileName.slice(extensionIndex);
+  let revision = 2;
+
+  while (existing.has(`${stem}-${revision}${extension}`)) {
+    revision += 1;
+  }
+
+  return `${stem}-${revision}${extension}`;
+}
+
+export function latestEditableSnapshotFileName(
+  baseFileName: string,
+  existingFileNames: Iterable<string>,
+): string | null {
+  let latestFileName: string | null = null;
+  let latestRevision = 0;
+
+  for (const existingFileName of existingFileNames) {
+    const revision = editableSnapshotRevisionNumber(baseFileName, existingFileName);
+    if (revision === null || revision <= latestRevision) continue;
+    latestFileName = existingFileName;
+    latestRevision = revision;
+  }
+
+  return latestFileName;
+}
+
+export function isEditableSnapshotRevisionFileName(
+  baseFileName: string,
+  candidateFileName: string,
+): boolean {
+  return editableSnapshotRevisionNumber(baseFileName, candidateFileName) !== null;
+}
+
 export function buildEditableSnapshotHtml(
   document: Document,
   surface: ProjectUiSurface,
+  options: EditableSnapshotBuildOptions = {},
 ): string | null {
   if (!document.documentElement || !document.body) return null;
   const bodyText = document.body.textContent?.trim() ?? '';
@@ -116,8 +178,11 @@ export function buildEditableSnapshotHtml(
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
   inlineComputedStyles(document, clone);
   syncResolvedResourceUrls(document, clone);
+  rebaseSnapshotResourceUrls(document, clone, surface, options);
   syncFormState(document, clone);
+  normalizeSnapshotMediaPlayback(clone);
   normalizeFrozenSnapshotState(document, clone);
+  normalizeSnapshotShellWidth(clone);
   pruneRuntimeOnlyNodes(clone);
   prepareSnapshotHead(document, clone, surface);
 
@@ -144,12 +209,56 @@ export function isReusableEditableSnapshotHtml(html: string | null): boolean {
   return !isRejectedEditableSnapshotHtml(html);
 }
 
+export function repairEditableSnapshotResourceUrls(
+  html: string | null,
+  surface: ProjectUiSurface,
+  options: EditableSnapshotBuildOptions = {},
+): string | null {
+  if (!html || !isReusableEditableSnapshotHtml(html) || typeof DOMParser === 'undefined') return html;
+  const snapshotDocument = new DOMParser().parseFromString(html, 'text/html');
+  const root = snapshotDocument.documentElement;
+  if (!root) return html;
+  let didRepair = normalizeSnapshotMediaPlayback(root);
+  didRepair = normalizeSnapshotShellWidth(root) || didRepair;
+  const rebaseUrl = createProjectResourceUrlRebaser(snapshotDocument, surface, options);
+  if (!rebaseUrl) return didRepair ? `<!doctype html>\n${root.outerHTML}` : html;
+
+  const trackRepair: ResourceUrlRebaser = (value) => {
+    const repaired = rebaseUrl(value);
+    if (repaired && repaired !== value) didRepair = true;
+    return repaired;
+  };
+  rebaseSnapshotElementResourceUrls(root, trackRepair);
+  return didRepair ? `<!doctype html>\n${root.outerHTML}` : html;
+}
+
 function slugifySnapshotName(value: string | null): string {
   return (value ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
+}
+
+function editableSnapshotRevisionNumber(
+  baseFileName: string,
+  candidateFileName: string,
+): number | null {
+  if (candidateFileName === baseFileName) return 1;
+  const lastSlashIndex = baseFileName.lastIndexOf('/');
+  const lastDotIndex = baseFileName.lastIndexOf('.');
+  const extensionIndex = lastDotIndex > lastSlashIndex ? lastDotIndex : baseFileName.length;
+  const stem = baseFileName.slice(0, extensionIndex);
+  const extension = baseFileName.slice(extensionIndex);
+  if (!candidateFileName.startsWith(`${stem}-`) || !candidateFileName.endsWith(extension)) {
+    return null;
+  }
+  const suffixStart = stem.length + 1;
+  const suffixEnd = candidateFileName.length - extension.length;
+  const suffix = candidateFileName.slice(suffixStart, suffixEnd);
+  if (!/^[2-9]\d*$/u.test(suffix)) return null;
+  const revision = Number(suffix);
+  return Number.isSafeInteger(revision) ? revision : null;
 }
 
 function isRejectedEditableSnapshotDocument(document: Document, bodyText: string): boolean {
@@ -286,6 +395,395 @@ function syncResolvedSrcset(source: Element, target: HTMLElement): void {
   }
 }
 
+function rebaseSnapshotResourceUrls(
+  document: Document,
+  clone: HTMLElement,
+  surface: ProjectUiSurface,
+  options: EditableSnapshotBuildOptions,
+): void {
+  const rebaseUrl = createProjectResourceUrlRebaser(document, surface, options);
+  if (!rebaseUrl) return;
+
+  rebaseSnapshotElementResourceUrls(clone, rebaseUrl);
+  appendSnapshotFontFaceRules(document, clone, rebaseUrl);
+}
+
+function rebaseSnapshotElementResourceUrls(
+  clone: HTMLElement,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  const elements = Array.from(clone.querySelectorAll('*'));
+  for (const element of elements) {
+    rebaseElementResourceAttributes(element, rebaseUrl);
+    rebaseElementInlineStyleUrls(element, rebaseUrl);
+  }
+  rebaseElementInlineStyleUrls(clone, rebaseUrl);
+  rebaseStyleElementUrls(clone, rebaseUrl);
+}
+
+function rebaseElementResourceAttributes(
+  element: Element,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  const tagName = element.tagName.toUpperCase();
+  if (['AUDIO', 'IMG', 'SOURCE', 'TRACK', 'VIDEO'].includes(tagName)) {
+    rebaseAttributeUrl(element, 'src', rebaseUrl);
+  }
+  if (['IMG', 'SOURCE'].includes(tagName)) {
+    rebaseSrcsetAttribute(element, rebaseUrl);
+  }
+  if (tagName === 'VIDEO') {
+    rebaseAttributeUrl(element, 'poster', rebaseUrl);
+  }
+  if (tagName === 'LINK') {
+    rebaseAttributeUrl(element, 'href', rebaseUrl);
+    rebaseSrcsetAttribute(element, 'imagesrcset', rebaseUrl);
+  }
+}
+
+function rebaseAttributeUrl(
+  element: Element,
+  attr: string,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  const value = element.getAttribute(attr);
+  if (!value) return;
+  const rebased = rebaseUrl(value);
+  if (rebased) element.setAttribute(attr, rebased);
+}
+
+function rebaseSrcsetAttribute(
+  element: Element,
+  attrOrRebaseUrl: string | ResourceUrlRebaser,
+  maybeRebaseUrl?: ResourceUrlRebaser,
+): void {
+  const attr = typeof attrOrRebaseUrl === 'string' ? attrOrRebaseUrl : 'srcset';
+  const rebaseUrl = typeof attrOrRebaseUrl === 'string' ? maybeRebaseUrl : attrOrRebaseUrl;
+  if (!rebaseUrl) return;
+  const value = element.getAttribute(attr);
+  if (!value) return;
+  const rebased = rebaseSrcsetValue(value, rebaseUrl);
+  if (rebased !== value) element.setAttribute(attr, rebased);
+}
+
+function rebaseSrcsetValue(
+  value: string,
+  rebaseUrl: ResourceUrlRebaser,
+): string {
+  return value
+    .split(',')
+    .map((candidate) => {
+      const trimmed = candidate.trim();
+      if (!trimmed) return candidate;
+      const [url, ...descriptors] = trimmed.split(/\s+/u);
+      if (!url) return candidate;
+      const rebased = rebaseUrl(url);
+      return [rebased ?? url, ...descriptors].join(' ');
+    })
+    .join(', ');
+}
+
+function rebaseElementInlineStyleUrls(
+  element: Element,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  const styleTarget = element as Element & { style?: CSSStyleDeclaration };
+  if (!styleTarget.style) return;
+  const style = styleTarget.style;
+  const properties = Array.from({ length: style.length }, (_, index) => style.item(index)).filter(Boolean);
+  for (const property of properties) {
+    const value = style.getPropertyValue(property);
+    if (!value || !value.includes('url(')) continue;
+    const rewritten = rebaseCssUrlValue(value, rebaseUrl);
+    if (rewritten !== value) {
+      style.setProperty(property, rewritten, style.getPropertyPriority(property));
+    }
+  }
+}
+
+function rebaseCssUrlValue(
+  value: string,
+  rebaseUrl: ResourceUrlRebaser,
+): string {
+  return value.replace(
+    /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")]*?))\s*\)/giu,
+    (match, doubleQuoted: string | undefined, singleQuoted: string | undefined, unquoted: string | undefined) => {
+      const rawUrl = doubleQuoted ?? singleQuoted ?? unquoted ?? '';
+      const rebased = rebaseUrl(rawUrl.trim());
+      return rebased ? `url("${escapeCssUrl(rebased)}")` : match;
+    },
+  );
+}
+
+function escapeCssUrl(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function rebaseStyleElementUrls(
+  clone: HTMLElement,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  for (const style of Array.from(clone.querySelectorAll('style'))) {
+    const cssText = style.textContent;
+    if (!cssText || !cssText.includes('url(')) continue;
+    const rewritten = rebaseCssUrlValue(cssText, rebaseUrl);
+    if (rewritten !== cssText) style.textContent = rewritten;
+  }
+}
+
+function appendSnapshotFontFaceRules(
+  document: Document,
+  clone: HTMLElement,
+  rebaseUrl: ResourceUrlRebaser,
+): void {
+  const cssText = collectSnapshotFontFaceRules(document, rebaseUrl);
+  if (cssText.length === 0) return;
+  const head = clone.querySelector('head') ?? createHead(clone);
+  const style = clone.ownerDocument.createElement('style');
+  style.setAttribute('data-od-snapshot-fonts', 'true');
+  style.textContent = cssText.join('\n');
+  head.append(style);
+}
+
+function collectSnapshotFontFaceRules(
+  document: Document,
+  rebaseUrl: ResourceUrlRebaser,
+): string[] {
+  const rules: string[] = [];
+  const seen = new Set<string>();
+  for (const styleSheet of Array.from(document.styleSheets)) {
+    let cssRules: CSSRuleList;
+    try {
+      cssRules = styleSheet.cssRules;
+    } catch {
+      continue;
+    }
+    collectFontFaceRulesFromList(cssRules, rebaseUrl, rules, seen);
+  }
+  return rules;
+}
+
+function collectFontFaceRulesFromList(
+  ruleList: CSSRuleList,
+  rebaseUrl: ResourceUrlRebaser,
+  out: string[],
+  seen: Set<string>,
+): void {
+  for (const rule of Array.from(ruleList)) {
+    const nestedRules = (rule as CSSRule & { cssRules?: CSSRuleList }).cssRules;
+    if (nestedRules) {
+      collectFontFaceRulesFromList(nestedRules, rebaseUrl, out, seen);
+    }
+    if (rule.type !== CSS_FONT_FACE_RULE_TYPE && !rule.cssText.trimStart().startsWith('@font-face')) {
+      continue;
+    }
+    const rewritten = rebaseCssUrlValue(rule.cssText, rebaseUrl);
+    if (seen.has(rewritten)) continue;
+    seen.add(rewritten);
+    out.push(rewritten);
+  }
+}
+
+function createProjectResourceUrlRebaser(
+  document: Document,
+  surface: ProjectUiSurface,
+  options: EditableSnapshotBuildOptions,
+): ResourceUrlRebaser | null {
+  const projectId = options.projectId?.trim();
+  const projectFileNames = options.projectFileNames ?? [];
+  if (!projectId || projectFileNames.length === 0) return null;
+  const lookup = buildProjectFileLookup(projectFileNames, surface.previewRuntimeRoot);
+  if (lookup.exact.size === 0 && lookup.suffix.size === 0) return null;
+  const baseUrl = resourceBaseUrl(document, options) ?? 'http://open-design.local/';
+  const documentOrigin = safeUrl(baseUrl)?.origin ?? null;
+  return (value) => {
+    const trimmed = value.trim();
+    if (!trimmed || shouldSkipResourceUrl(trimmed)) return null;
+    const resolved = safeUrl(trimmed, baseUrl);
+    if (!resolved) return null;
+    if (!isLocalSnapshotResourceUrl(resolved, documentOrigin)) return null;
+    for (const candidate of projectResourceCandidateKeys(resolved, projectId)) {
+      const fileName = lookup.exact.get(candidate) ?? lookupProjectFileBySuffix(lookup.suffix, candidate);
+      if (fileName) return projectRawUrl(projectId, fileName);
+    }
+    return null;
+  };
+}
+
+function resourceBaseUrl(
+  document: Document,
+  options: EditableSnapshotBuildOptions,
+): string | null {
+  for (const candidate of [document.baseURI, document.location?.href, options.baseUrl]) {
+    if (!candidate) continue;
+    const url = safeUrl(candidate);
+    if (url && /^https?:$/iu.test(url.protocol)) return url.href;
+  }
+  return null;
+}
+
+function shouldSkipResourceUrl(value: string): boolean {
+  return /^(?:#|data:|blob:|mailto:|tel:|javascript:)/iu.test(value);
+}
+
+function safeUrl(value: string, base?: string): URL | null {
+  try {
+    return base ? new URL(value, base) : new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function isLocalSnapshotResourceUrl(url: URL, documentOrigin: string | null): boolean {
+  if (!/^https?:$/iu.test(url.protocol)) return false;
+  if (documentOrigin && url.origin === documentOrigin) return true;
+  return /^(?:127\.0\.0\.1|localhost|\[::1\])$/iu.test(url.hostname);
+}
+
+function projectResourceCandidateKeys(url: URL, projectId: string): string[] {
+  const keys: string[] = [];
+  const encodedProjectId = encodeURIComponent(projectId);
+  const rawPrefix = `/api/projects/${encodedProjectId}/raw/`;
+  const proxyPrefix = `/api/projects/${encodedProjectId}/ui-preview/proxy/`;
+  if (url.pathname.startsWith(rawPrefix)) {
+    addCandidateKey(keys, decodeUrlPath(url.pathname.slice(rawPrefix.length)));
+  } else if (url.pathname.startsWith(proxyPrefix)) {
+    const afterProxyPrefix = url.pathname.slice(proxyPrefix.length);
+    const firstSlash = afterProxyPrefix.indexOf('/');
+    if (firstSlash >= 0) {
+      const proxyPath = decodeUrlPath(afterProxyPrefix.slice(firstSlash + 1));
+      addCandidateKey(keys, proxyPath);
+      addNextImageCandidateKey(keys, proxyPath, url);
+    }
+  } else {
+    addCandidateKey(keys, decodeUrlPath(url.pathname));
+    addNextImageCandidateKey(keys, decodeUrlPath(url.pathname), url);
+  }
+  return keys;
+}
+
+function addNextImageCandidateKey(keys: string[], pathName: string, url: URL): void {
+  if (!/(?:^|\/)_next\/image$/u.test(normalizeProjectPath(pathName))) return;
+  const sourceUrl = url.searchParams.get('url');
+  if (sourceUrl) addCandidateKey(keys, sourceUrl);
+}
+
+function addCandidateKey(keys: string[], value: string): void {
+  const normalized = normalizeProjectPath(value);
+  if (normalized && !keys.includes(normalized)) keys.push(normalized);
+}
+
+function decodeUrlPath(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function buildProjectFileLookup(
+  projectFileNames: readonly string[],
+  runtimeRoot: string | null,
+): ProjectFileLookup {
+  const lookup: ProjectFileLookup = {
+    exact: new Map<string, string>(),
+    suffix: new Map<string, string>(),
+  };
+  const ambiguousExact = new Set<string>();
+  const ambiguousSuffix = new Set<string>();
+  const normalizedRuntimeRoot = normalizeProjectPath(runtimeRoot ?? '');
+  for (const rawName of projectFileNames) {
+    const fileName = normalizeProjectPath(rawName);
+    if (!fileName) continue;
+    addProjectFileLookup(lookup.exact, ambiguousExact, fileName, fileName);
+    addProjectFileSuffixLookups(lookup.suffix, ambiguousSuffix, fileName, fileName);
+    addPublicProjectFileLookups(lookup.exact, ambiguousExact, fileName, fileName);
+    addPublicProjectFileLookups(lookup.suffix, ambiguousSuffix, fileName, fileName);
+    if (normalizedRuntimeRoot && fileName.startsWith(`${normalizedRuntimeRoot}/`)) {
+      const runtimeRelative = fileName.slice(normalizedRuntimeRoot.length + 1);
+      addProjectFileLookup(lookup.exact, ambiguousExact, runtimeRelative, fileName);
+      addProjectFileSuffixLookups(lookup.suffix, ambiguousSuffix, runtimeRelative, fileName);
+      addPublicProjectFileLookups(lookup.exact, ambiguousExact, runtimeRelative, fileName);
+      addPublicProjectFileLookups(lookup.suffix, ambiguousSuffix, runtimeRelative, fileName);
+    }
+  }
+  return lookup;
+}
+
+function addPublicProjectFileLookups(
+  lookup: Map<string, string>,
+  ambiguous: Set<string>,
+  value: string,
+  fileName: string,
+): void {
+  if (value === PROJECT_PUBLIC_DIR || !value.startsWith(`${PROJECT_PUBLIC_DIR}/`)) return;
+  addProjectFileLookup(lookup, ambiguous, value.slice(PROJECT_PUBLIC_DIR.length + 1), fileName);
+}
+
+function addProjectFileLookup(
+  lookup: Map<string, string>,
+  ambiguous: Set<string>,
+  value: string,
+  fileName: string,
+): void {
+  const key = normalizeProjectPath(value);
+  if (!key || ambiguous.has(key)) return;
+  const existing = lookup.get(key);
+  if (existing && existing !== fileName) {
+    lookup.delete(key);
+    ambiguous.add(key);
+    return;
+  }
+  lookup.set(key, fileName);
+}
+
+function addProjectFileSuffixLookups(
+  lookup: Map<string, string>,
+  ambiguous: Set<string>,
+  value: string,
+  fileName: string,
+): void {
+  const key = normalizeProjectPath(value);
+  if (!key || !PROJECT_RESOURCE_FILE_EXTENSION_RE.test(key)) return;
+  const segments = key.split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    const suffix = segments.slice(index).join('/');
+    addProjectFileLookup(lookup, ambiguous, suffix, fileName);
+  }
+}
+
+function lookupProjectFileBySuffix(
+  lookup: Map<string, string>,
+  value: string,
+): string | null {
+  const key = normalizeProjectPath(value);
+  if (!key || !PROJECT_RESOURCE_FILE_EXTENSION_RE.test(key)) return null;
+  const segments = key.split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    const fileName = lookup.get(segments.slice(index).join('/'));
+    if (fileName) return fileName;
+  }
+  return null;
+}
+
+function normalizeProjectPath(value: string): string {
+  return value
+    .replace(/\\/g, '/')
+    .replace(/^\/+/u, '')
+    .replace(/\/+/g, '/')
+    .replace(/^\.\//u, '')
+    .split('#')[0]!
+    .split('?')[0]!;
+}
+
+function projectRawUrl(projectId: string, filePath: string): string {
+  const safePath = filePath
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+  return `/api/projects/${encodeURIComponent(projectId)}/raw/${safePath}`;
+}
+
 function normalizeFrozenSnapshotState(document: Document, clone: HTMLElement): void {
   const win = document.defaultView;
   if (!win) return;
@@ -344,6 +842,162 @@ function syncFormState(document: Document, clone: HTMLElement): void {
       else target.removeAttribute('selected');
     }
   }
+}
+
+function normalizeSnapshotMediaPlayback(root: HTMLElement): boolean {
+  let changed = false;
+  for (const element of Array.from(root.querySelectorAll('audio, video'))) {
+    if (!element.hasAttribute('muted')) {
+      element.setAttribute('muted', '');
+      changed = true;
+    }
+    if (element.hasAttribute('autoplay')) {
+      element.removeAttribute('autoplay');
+      changed = true;
+    }
+    if (element.tagName.toUpperCase() === 'VIDEO' && !element.hasAttribute('playsinline')) {
+      element.setAttribute('playsinline', '');
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function normalizeSnapshotShellWidth(root: HTMLElement): boolean {
+  const targets = new Set<HTMLElement>([root]);
+  const body = snapshotBodyElement(root);
+  if (body) {
+    targets.add(body);
+    addBodyLevelSnapshotShellTargets(root, body, targets);
+  }
+  for (const element of Array.from(root.querySelectorAll('#root, #app, #__next, #app-root, #root-app, [data-v-app]'))) {
+    const htmlElement = snapshotHTMLElement(root, element);
+    if (!htmlElement || !isAppMountElement(htmlElement)) continue;
+    targets.add(htmlElement);
+    if (isBodyLevelSnapshotShellElement(htmlElement)) {
+      addDirectSnapshotShellChildTargets(root, htmlElement, targets);
+    }
+  }
+
+  let changed = false;
+  for (const target of targets) {
+    changed = normalizeSnapshotShellElementWidth(target) || changed;
+  }
+  return changed;
+}
+
+function addBodyLevelSnapshotShellTargets(
+  root: HTMLElement,
+  body: HTMLElement,
+  targets: Set<HTMLElement>,
+): void {
+  for (const child of Array.from(body.children)) {
+    const childElement = snapshotHTMLElement(root, child);
+    if (!childElement || !isBodyLevelSnapshotShellElement(childElement)) continue;
+    targets.add(childElement);
+    addDirectSnapshotShellChildTargets(root, childElement, targets);
+  }
+}
+
+function addDirectSnapshotShellChildTargets(
+  root: HTMLElement,
+  shell: HTMLElement,
+  targets: Set<HTMLElement>,
+): void {
+  for (const child of Array.from(shell.children)) {
+    const childElement = snapshotHTMLElement(root, child);
+    if (!childElement || !isDirectSnapshotShellChildElement(childElement)) continue;
+    targets.add(childElement);
+  }
+}
+
+function isBodyLevelSnapshotShellElement(element: HTMLElement): boolean {
+  if (!hasSnapshotPixelWidth(element) || !isVisibleSnapshotElement(element)) return false;
+  const tagName = element.tagName.toUpperCase();
+  if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'NEXT-ROUTE-ANNOUNCER'].includes(tagName)) return false;
+  if (['ABSOLUTE', 'FIXED'].includes(element.style.getPropertyValue('position').trim().toUpperCase())) return false;
+  return isAppMountElement(element)
+    || tagName === 'MAIN'
+    || hasSnapshotShellClassCue(element);
+}
+
+function isDirectSnapshotShellChildElement(element: HTMLElement): boolean {
+  if (!hasSnapshotPixelWidth(element) || !isVisibleSnapshotElement(element)) return false;
+  const tagName = element.tagName.toUpperCase();
+  return ['HEADER', 'MAIN', 'FOOTER'].includes(tagName)
+    || hasSnapshotFullBleedClassCue(element);
+}
+
+function hasSnapshotShellClassCue(element: HTMLElement): boolean {
+  return /(?:^|\s)(?:h-screen|min-h-screen|isolate|overflow-x-clip|w-full)(?:\s|$)/u.test(String(element.className ?? ''));
+}
+
+function hasSnapshotFullBleedClassCue(element: HTMLElement): boolean {
+  return /(?:^|\s)(?:inset-x-0|left-0|right-0)(?:\s|$)/u.test(String(element.className ?? ''));
+}
+
+function hasSnapshotPixelWidth(element: HTMLElement): boolean {
+  return isPixelCssValue(element.style.getPropertyValue('width').trim());
+}
+
+function isVisibleSnapshotElement(element: HTMLElement): boolean {
+  return element.style.getPropertyValue('display').trim().toLowerCase() !== 'none';
+}
+
+function normalizeSnapshotShellElementWidth(element: HTMLElement): boolean {
+  let changed = false;
+  const width = element.style.getPropertyValue('width').trim();
+  if (isPixelCssValue(width)) {
+    element.style.setProperty('width', '100%');
+    changed = true;
+  }
+  const maxWidth = element.style.getPropertyValue('max-width').trim();
+  if (isPositivePixelCssValue(maxWidth)) {
+    element.style.setProperty('max-width', 'none');
+    changed = true;
+  }
+  const minWidth = element.style.getPropertyValue('min-width').trim();
+  if (isPositivePixelCssValue(minWidth)) {
+    element.style.setProperty('min-width', '0px');
+    changed = true;
+  }
+  return changed;
+}
+
+function isPixelCssValue(value: string): boolean {
+  return /^\d+(?:\.\d+)?px$/iu.test(value);
+}
+
+function isPositivePixelCssValue(value: string): boolean {
+  if (!isPixelCssValue(value)) return false;
+  return Number.parseFloat(value) > 0;
+}
+
+function snapshotHTMLElement(root: HTMLElement, element: Element | null): HTMLElement | null {
+  if (!element) return null;
+  const win = root.ownerDocument.defaultView;
+  if (win) return element instanceof win.HTMLElement ? element : null;
+  if (!('style' in element) || typeof element.tagName !== 'string') return null;
+  return element as HTMLElement;
+}
+
+function snapshotBodyElement(root: HTMLElement): HTMLElement | null {
+  if (isBodyElement(root)) return root;
+  for (const child of Array.from(root.children)) {
+    const childElement = snapshotHTMLElement(root, child);
+    if (childElement && isBodyElement(childElement)) return childElement;
+  }
+  const descendantBodyByTag = snapshotHTMLElement(root, root.getElementsByTagName('body')[0] ?? null);
+  if (descendantBodyByTag) return descendantBodyByTag;
+  const descendantBodyBySelector = snapshotHTMLElement(root, root.querySelector('body'));
+  if (descendantBodyBySelector) return descendantBodyBySelector;
+  const documentBody = snapshotHTMLElement(root, root.ownerDocument.body);
+  if (!documentBody || documentBody.parentElement !== root) return null;
+  return documentBody;
+}
+
+function isBodyElement(element: HTMLElement): boolean {
+  return element.tagName.toUpperCase() === 'BODY';
 }
 
 function pruneRuntimeOnlyNodes(clone: HTMLElement): void {
