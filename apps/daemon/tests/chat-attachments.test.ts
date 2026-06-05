@@ -104,6 +104,8 @@ describe('renderEditableSnapshotTargetHint', () => {
     expect(hint).toContain('edit this HTML file directly');
     expect(hint).toContain('currently rendered in Preview');
     expect(hint).toContain('do not apply the requested design change to TSX, JSX, Vue, Svelte, CSS, or other original app source');
+    expect(hint).toContain('User-facing updates must describe the design/rendered preview change only');
+    expect(hint).toContain('Do not mention inline styles, computed styles, generated HTML, srcDoc, snapshot internals');
   });
 
   it('stays silent when no editable snapshot is attached', () => {

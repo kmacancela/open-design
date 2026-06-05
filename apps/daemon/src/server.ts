@@ -1231,6 +1231,7 @@ export function renderEditableSnapshotTargetHint(attachments) {
     'For visual, text, color, layout, or style requests while this snapshot is attached, edit this HTML file directly because it is the file currently rendered in Preview.',
     'You may inspect framework/source files for reference, but do not apply the requested design change to TSX, JSX, Vue, Svelte, CSS, or other original app source unless the user explicitly asks to change the real app runtime.',
     'The open preview updates from the snapshot HTML, so the requested visible change must be written to that snapshot file.',
+    'User-facing updates must describe the design/rendered preview change only. Do not mention inline styles, computed styles, generated HTML, srcDoc, snapshot internals, or other implementation details unless the user explicitly asks how the snapshot works.',
   ];
   if (otherSnapshots.length > 0) {
     lines.push(`Other attached editable snapshots: ${otherSnapshots.map((name) => `\`${name}\``).join(', ')}`);
